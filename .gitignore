@@ -1,0 +1,9 @@
+__pycache__/
+.env
+*.pyc
+cache/
+output/
+*.mp4
+node_modules/
+.DS_Store
+*.log
