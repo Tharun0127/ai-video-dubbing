@@ -18,6 +18,9 @@ output/
 *.mkv
 *.mov
 !samples/*.wav
+samples/raw_source.mp4
+samples/test_clip.mp4
 
 node_modules/
 .DS_Store
+
