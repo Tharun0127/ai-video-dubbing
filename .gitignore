@@ -1,9 +1,23 @@
 __pycache__/
-.env
 *.pyc
+.pytest_cache/
+.venv/
+venv/
+
+# Secrets — never commit
+.env
+
+# Generated artifacts
 cache/
 output/
+*.log
+
+# Media: large intermediates are regenerated, but the committed test clips in
+# samples/ are small and licence-clear, so they stay tracked.
 *.mp4
+*.mkv
+*.mov
+!samples/*.wav
+
 node_modules/
 .DS_Store
-*.log
