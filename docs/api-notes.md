@@ -145,6 +145,103 @@ lowercases booleans to `"true"`/`"false"` on the way out.
 
 ---
 
+## Translation — `POST /translate`
+
+`Content-Type: application/json`. Confirmed 2026-07-29 against
+`https://docs.sarvam.ai/api-reference/text/translate-text.md`, the two model pages, and
+real calls (`scripts/m3_probe.py`, raw response saved in `output/m3_register_probe.json`).
+
+### Request fields
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `input` | string | **required**. Char cap is **per model** — see below |
+| `source_language_code` | enum | **required**. 23 codes, plus `auto` (mayura:v1 only) |
+| `target_language_code` | enum | **required**. Same set, no `auto` |
+| `model` | enum | `mayura:v1` or `sarvam-translate:v1` |
+| `mode` | enum | `formal` (default), `modern-colloquial`, `classic-colloquial`, `code-mixed` |
+| `speaker_gender` | enum | `Male` / `Female`. Documented as most relevant to `code-mixed` |
+| `output_script` | enum \| null | `roman`, `fully-native`, `spoken-form-in-native`. **mayura:v1 only** |
+| `numerals_format` | enum | `international` (default) or `native` |
+
+There is **no context parameter and no batch/array parameter.** The request takes exactly
+one `input` string. Both were checked for explicitly because SPEC.md asks for context
+windows and batching; the consequence is that both have to be built on top of `input`
+(numbered lines), which is what `src/stages/translate.py` does.
+
+### Response fields — observed
+
+```json
+{
+  "request_id": "20260728_f3dde1b6-3ca9-4645-ab2e-75cae23616e3",
+  "translated_text": "ठीक है, जय, एक कार्ड चुनो।",
+  "source_language_code": "en-IN"
+}
+```
+
+Exactly three keys. No usage/token counts, so cost has to be derived from
+`len(input)` locally, which is what `metrics.cost_translate_inr` does.
+
+### Model capability matrix — this is the whole M3 design constraint
+
+| | `sarvam-translate:v1` | `mayura:v1` |
+| --- | --- | --- |
+| Input cap | **2000 chars** | **1000 chars** |
+| Languages | all 23 | **11** (10 Indian + English) |
+| Style modes | **`formal` only** | all four |
+| `output_script` | not supported | supported |
+
+The two capabilities are disjoint in exactly the way that matters: the model with the
+register control is the one with the smaller cap and fewer languages. Encoded in
+`config.TRANSLATE_MODEL_MODES` / `TRANSLATE_MODEL_LANGUAGES` / `TRANSLATE_MODEL_MAX_CHARS`
+and enforced in `SarvamClient.translate` *before* the request is built, because passing a
+style mode to `sarvam-translate:v1` does **not** error — it silently returns formal
+output, which would make a register comparison meaningless.
+
+### Line-structure behaviour under batching — measured, and the two models differ
+
+Four segments sent as one request in the form `[1] …\n[2] …\n[3] …\n[4] …`:
+
+| model / mode | markers returned | newlines in reply |
+| --- | --- | --- |
+| `sarvam-translate:v1` / formal | 1,2,3,4 | 3 — one line per segment |
+| `mayura:v1` / formal | **2,3,4 — marker 1 dropped** | 0 |
+| `mayura:v1` / modern-colloquial | 1,2,3,4 | **0 — all on one line** |
+| `mayura:v1` / classic-colloquial | 1,2,3,4 | **0** |
+| `mayura:v1` / code-mixed | 1,2,3,4 | **0** |
+
+Two consequences, both now covered by tests:
+
+1. **A line-anchored parser does not work.** `mayura:v1` returns every segment joined onto
+   a single line, so markers have to be scanned anywhere in the reply, not matched at the
+   start of a line.
+2. **`mayura:v1` can drop a marker outright** (observed in `formal` mode). There is no safe
+   way to realign a reply with a missing marker, so the stage treats any reply that does
+   not carry markers `1..N` exactly once, in order, as a failure and re-issues that batch
+   one segment per request.
+
+### `numerals_format: native` rewrites the protocol markers
+
+With `numerals_format=native`, `[1] [2] [3] [4]` come back as `[१] [२] [३] [४]` — the
+model applies native numerals to the scaffolding as well as to the content. Python's `\d`
+is Unicode-aware and `int("१") == 1`, so the parser handles it; this is recorded because
+it is exactly the kind of thing that silently breaks a hand-rolled `[0-9]` regex.
+
+### M3 decision — mayura:v1 / classic-colloquial, against SPEC.md's default
+
+SPEC.md names Sarvam-Translate. The measured comparison in `docs/m3-results.md` overrides
+that for this source: on conversational speech `sarvam-translate:v1` rendered "top card"
+as "सबसे अच्छा कार्ड" (*best* card — it destroys the trick's punchline) and "No way" as
+"कोई बात नहीं" (*never mind*). `mayura:v1` in `classic-colloquial` got both right and was
+the only variant holding one consistent level of address across all four segments.
+
+The cost of that choice is expansion: `classic-colloquial` has the highest estimated
+syllable ratio of the five variants (1.53 mean vs 1.30 for `modern-colloquial`).
+`--translate-model` and `--translate-mode` make it a one-flag change if M4 shows the
+1.25 pace clamp is being hit constantly.
+
+---
+
 ## Pricing (INR)
 
 From `https://docs.sarvam.ai/api/getting-started/pricing.md`, confirmed 2026-07-28.
@@ -223,9 +320,6 @@ documented default, would both be worse than saying which threshold actually ran
 These will be filled in at the milestone that needs them, following the same rule:
 fetch the docs, make one real call, record what came back.
 
-- **Sarvam-Translate** (M3): endpoint path, request schema, the ~2000-char cap, whether a
-  context window of neighbouring segments is supported, and whether several segments can
-  be batched into one request.
 - **Bulbul v3 TTS** (M4): endpoint path, speaker identifiers, the ~2500-char cap, output
   audio format/sample rate, and above all **the semantics of `pace`** — whether a value
   above 1.0 means faster or slower speech. The duration-fit update rule must be inverted

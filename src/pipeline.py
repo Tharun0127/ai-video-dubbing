@@ -34,6 +34,12 @@ from .config import (
     MIN_SILENCE_S,
     SILENCE_THRESHOLD_DB,
     STAGE_ORDER,
+    TRANSLATE_CONTEXT_SEGMENTS,
+    TRANSLATE_MAX_BATCH_SEGMENTS,
+    TRANSLATE_MODE,
+    TRANSLATE_MODEL,
+    TRANSLATE_MODELS,
+    TRANSLATE_MODES,
     Config,
     ConfigError,
     load_config,
@@ -103,6 +109,26 @@ def build_arg_parser() -> argparse.ArgumentParser:
                           help="Segments shorter than this are merged into a neighbour.")
     chunking.add_argument("--max-segment-s", type=float, default=MAX_SEGMENT_S,
                           help="Segments longer than this are split at a sentence boundary.")
+
+    translation = parser.add_argument_group("translation (M3)")
+    translation.add_argument("--translate-model", default=TRANSLATE_MODEL,
+                             choices=sorted(TRANSLATE_MODELS),
+                             help="Translation model. Only mayura:v1 honours style modes; "
+                                  "only sarvam-translate:v1 covers all 23 languages.")
+    translation.add_argument("--translate-mode", default=TRANSLATE_MODE,
+                             choices=sorted(TRANSLATE_MODES),
+                             help="Target register. See docs/m3-results.md for the "
+                                  "measured comparison behind the default.")
+    translation.add_argument("--translate-batch-segments", type=int,
+                             default=TRANSLATE_MAX_BATCH_SEGMENTS,
+                             help="Most segments packed into one /translate request.")
+    translation.add_argument("--translate-context-segments", type=int,
+                             default=TRANSLATE_CONTEXT_SEGMENTS,
+                             help="Neighbouring segments sent per side as discourse "
+                                  "context; their translations are discarded.")
+    translation.add_argument("--translate-no-batch", action="store_true",
+                             help="Send one request per segment, with no context window "
+                                  "(for the batching before/after comparison).")
     return parser
 
 
@@ -137,11 +163,19 @@ def run_stage(
         run_asr(config, client, metrics, wav_path=state.get("wav_path"))  # type: ignore[arg-type]
         return
 
+    if name == "translate":
+        from .stages.translate import run_translate
+
+        # Reads output/segments.json, so `--stage translate` resumes from disk without
+        # re-running demux or ASR.
+        state["translate"] = run_translate(config, client, metrics)
+        return
+
     milestone = STAGE_MILESTONE.get(name, "a later milestone")
     raise StageNotImplementedError(
         f"stage {name!r} is not implemented yet -- it arrives in {milestone}. "
-        f"Milestones 1-2 deliver config, cache, metrics, the Sarvam client, this CLI, "
-        f"demux, and chunked ASR."
+        f"Milestones 1-3 deliver config, cache, metrics, the Sarvam client, this CLI, "
+        f"demux, chunked ASR, and per-segment translation."
     )
 
 
@@ -223,6 +257,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             max_chunk_s=args.max_chunk_s,
             min_segment_s=args.min_segment_s,
             max_segment_s=args.max_segment_s,
+            translate_model=args.translate_model,
+            translate_mode=args.translate_mode,
+            translate_batch_segments=args.translate_batch_segments,
+            translate_context_segments=args.translate_context_segments,
+            translate_no_batch=args.translate_no_batch,
         )
     except ConfigError as exc:
         logger.error("configuration error: %s", exc)

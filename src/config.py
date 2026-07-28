@@ -33,16 +33,51 @@ DEFAULT_BASE_URL = "https://api.sarvam.ai"
 AUTH_HEADER = "api-subscription-key"
 
 #: Model identifiers, pinned so cache keys stay stable across runs.
+#:
+#: The translation default is mayura:v1 rather than the sarvam-translate:v1 named in
+#: SPEC.md. That is a deliberate, measured deviation: sarvam-translate:v1 is formal-only,
+#: and on this conversational source it mistranslated "top card" as "सबसे अच्छा कार्ड"
+#: (best card) and "No way" as "कोई बात नहीं" (never mind). mayura:v1 in
+#: classic-colloquial got both right. Full side-by-side in docs/m3-results.md.
 ASR_MODEL = "saaras:v3"
-TRANSLATE_MODEL = "sarvam-translate:v1"
+TRANSLATE_MODEL = "mayura:v1"
 TTS_MODEL = "bulbul:v3"
 
 #: The synchronous /speech-to-text endpoint rejects audio longer than this (HTTP 422).
 ASR_MAX_AUDIO_S = 30.0
 
-#: Per-request input caps for the text endpoints.
+#: Per-request input caps for the text endpoints. The translate cap is per *model*:
+#: mayura:v1 rejects above 1000 chars, sarvam-translate:v1 above 2000 (HTTP 422).
 TRANSLATE_MAX_CHARS = 2000
+MAYURA_MAX_CHARS = 1000
 TTS_MAX_CHARS = 2500
+
+#: Translation models confirmed on docs.sarvam.ai (2026-07-29, see docs/api-notes.md).
+TRANSLATE_MODELS: frozenset[str] = frozenset({"sarvam-translate:v1", "mayura:v1"})
+
+#: Style modes accepted by POST /translate. Only mayura:v1 honours anything but `formal`.
+TRANSLATE_MODES: frozenset[str] = frozenset(
+    {"formal", "modern-colloquial", "classic-colloquial", "code-mixed"}
+)
+
+#: Per-model capability matrix. Encoded here so an unsupported combination fails locally
+#: instead of costing a round-trip and returning a silently formal translation.
+TRANSLATE_MODEL_MAX_CHARS: dict[str, int] = {
+    "sarvam-translate:v1": TRANSLATE_MAX_CHARS,
+    "mayura:v1": MAYURA_MAX_CHARS,
+}
+TRANSLATE_MODEL_MODES: dict[str, frozenset[str]] = {
+    # Documented: "sarvam-translate:v1 = all 22 languages, formal only".
+    "sarvam-translate:v1": frozenset({"formal"}),
+    "mayura:v1": TRANSLATE_MODES,
+}
+
+#: Optional /translate knobs, validated locally before a request is built.
+TRANSLATE_OUTPUT_SCRIPTS: frozenset[str] = frozenset(
+    {"roman", "fully-native", "spoken-form-in-native"}
+)
+TRANSLATE_NUMERALS_FORMATS: frozenset[str] = frozenset({"international", "native"})
+TRANSLATE_SPEAKER_GENDERS: frozenset[str] = frozenset({"Male", "Female"})
 
 #: Bulbul's documented pace range. The pipeline deliberately clamps tighter than this
 #: (see SPEC.md) because speech stops sounding human beyond roughly +/-25%.
@@ -71,6 +106,20 @@ ASR_MODES: frozenset[str] = frozenset(
     {"transcribe", "translate", "verbatim", "translit", "codemix"}
 )
 
+#: Languages accepted by POST /translate. sarvam-translate:v1 covers all 23; mayura:v1
+#: covers 10 Indian languages plus English (docs.sarvam.ai/api/getting-started/models).
+TRANSLATE_LANGUAGES: frozenset[str] = ASR_LANGUAGES - {"unknown"}
+MAYURA_LANGUAGES: frozenset[str] = frozenset(
+    {
+        "en-IN", "hi-IN", "bn-IN", "ta-IN", "te-IN", "gu-IN",
+        "kn-IN", "ml-IN", "mr-IN", "pa-IN", "od-IN",
+    }
+)
+TRANSLATE_MODEL_LANGUAGES: dict[str, frozenset[str]] = {
+    "sarvam-translate:v1": TRANSLATE_LANGUAGES,
+    "mayura:v1": MAYURA_LANGUAGES,
+}
+
 #: Pipeline stage names, in execution order. Used by --stage and by metrics.
 STAGE_ORDER: tuple[str, ...] = (
     "demux", "asr", "translate", "tts", "assemble", "mux", "qc",
@@ -96,6 +145,33 @@ MIN_SEGMENT_S = 1.0
 
 #: Segments longer than this make timing drift unrecoverable, so they are split.
 MAX_SEGMENT_S = 15.0
+
+# --------------------------------------------------------------------------------------
+# M3 translation defaults (see src/stages/translate.py for the rationale)
+# --------------------------------------------------------------------------------------
+
+#: Default style mode, chosen with TRANSLATE_MODEL above because the style modes only
+#: exist on mayura:v1. `classic-colloquial` was picked from the measured register
+#: comparison, not from the API default (`formal`): it is the only variant that keeps one
+#: consistent level of address across all four segments, and it translates the emotional
+#: content ("वाह, ये तो कमाल है") instead of leaving it in English the way
+#: modern-colloquial does ("वाह, amazing है"). It also expands the most -- mean estimated
+#: syllable ratio 1.53 against 1.30 for modern-colloquial -- which is the price M4 pays.
+TRANSLATE_MODE = "classic-colloquial"
+
+#: Most segments packed into one /translate request. The character cap usually binds first;
+#: this is a second ceiling so one batch failing to parse never costs the whole clip.
+TRANSLATE_MAX_BATCH_SEGMENTS = 12
+
+#: Neighbouring segments included in a batch purely as discourse context. Their
+#: translations are discarded. /translate has no context parameter (confirmed against the
+#: live schema), so context can only be carried by putting the neighbours in the request.
+TRANSLATE_CONTEXT_SEGMENTS = 2
+
+#: Fraction of a model's character cap a batch may fill before it is closed. The reply is
+#: longer than the request for en->hi, and the cap applies to the input, so this is purely
+#: a safety margin against an off-by-a-few packing bug, not an API requirement.
+TRANSLATE_BATCH_FILL = 0.8
 
 
 class ConfigError(RuntimeError):
@@ -145,6 +221,13 @@ class Config:
     max_chunk_s: float = MAX_CHUNK_S
     min_segment_s: float = MIN_SEGMENT_S
     max_segment_s: float = MAX_SEGMENT_S
+
+    # --- translation (M3) -----------------------------------------------------------
+    translate_mode: str = TRANSLATE_MODE
+    translate_batch_segments: int = TRANSLATE_MAX_BATCH_SEGMENTS
+    translate_context_segments: int = TRANSLATE_CONTEXT_SEGMENTS
+    #: Disable batching entirely and send one request per segment (for A/B measurement).
+    translate_no_batch: bool = False
 
     #: Populated in __post_init__; kept out of __repr__ so the key is never printed.
     _redacted: bool = field(default=True, repr=False)
@@ -209,6 +292,39 @@ class Config:
                 f"--max-segment-s ({self.max_segment_s}) must exceed --min-segment-s "
                 f"({self.min_segment_s})"
             )
+        if self.translate_model not in TRANSLATE_MODELS:
+            raise ConfigError(
+                f"translate_model {self.translate_model!r} is not one of "
+                f"{sorted(TRANSLATE_MODELS)}"
+            )
+        allowed_modes = TRANSLATE_MODEL_MODES[self.translate_model]
+        if self.translate_mode not in TRANSLATE_MODES:
+            raise ConfigError(
+                f"--translate-mode {self.translate_mode!r} is not one of {sorted(TRANSLATE_MODES)}"
+            )
+        if self.translate_mode not in allowed_modes:
+            # Sending an unsupported mode does not error -- it silently returns formal
+            # output, which would make the register comparison meaningless.
+            raise ConfigError(
+                f"model {self.translate_model} supports mode(s) {sorted(allowed_modes)}, "
+                f"not {self.translate_mode!r}. mayura:v1 is the model with style modes."
+            )
+        for code, label in ((self.source_lang, "source"), (self.target_lang, "target")):
+            # "unknown" is the ASR auto-detect sentinel and is legal for --source-lang.
+            # /translate has no equivalent (mayura:v1 spells it "auto", sarvam-translate:v1
+            # has none at all), so the translate stage rejects it there instead of guessing
+            # a mapping between two different vendors' sentinels.
+            if code == "unknown":
+                continue
+            if code not in TRANSLATE_MODEL_LANGUAGES[self.translate_model]:
+                raise ConfigError(
+                    f"{label}-lang {code!r} is not supported by {self.translate_model}. "
+                    f"Supported: {sorted(TRANSLATE_MODEL_LANGUAGES[self.translate_model])}"
+                )
+        if self.translate_batch_segments < 1:
+            raise ConfigError("--translate-batch-segments must be >= 1")
+        if self.translate_context_segments < 0:
+            raise ConfigError("--translate-context-segments must be >= 0")
 
     def __repr__(self) -> str:  # pragma: no cover - trivial
         """Repr with the API key redacted, so configs are safe to log."""
@@ -217,6 +333,7 @@ class Config:
             f"source_lang={self.source_lang!r}, target_lang={self.target_lang!r}, "
             f"dry_run={self.dry_run}, max_segments={self.max_segments}, "
             f"enable_duration_fit={self.enable_duration_fit}, stage={self.stage!r}, "
+            f"translate_model={self.translate_model!r}, translate_mode={self.translate_mode!r}, "
             f"cache_dir={str(self.cache_dir)!r}, api_key='***redacted***')"
         )
 
@@ -245,6 +362,11 @@ def load_config(
     max_chunk_s: float = MAX_CHUNK_S,
     min_segment_s: float = MIN_SEGMENT_S,
     max_segment_s: float = MAX_SEGMENT_S,
+    translate_model: str = TRANSLATE_MODEL,
+    translate_mode: str = TRANSLATE_MODE,
+    translate_batch_segments: int = TRANSLATE_MAX_BATCH_SEGMENTS,
+    translate_context_segments: int = TRANSLATE_CONTEXT_SEGMENTS,
+    translate_no_batch: bool = False,
 ) -> Config:
     """Load .env, merge it with CLI arguments, and return a validated Config."""
     load_dotenv(dotenv_path=env_file, override=False)
@@ -273,6 +395,11 @@ def load_config(
         max_chunk_s=max_chunk_s,
         min_segment_s=min_segment_s,
         max_segment_s=max_segment_s,
+        translate_model=translate_model,
+        translate_mode=translate_mode,
+        translate_batch_segments=translate_batch_segments,
+        translate_context_segments=translate_context_segments,
+        translate_no_batch=translate_no_batch,
     )
     logger.debug("Loaded %r (key %s)", cfg, cfg.key_fingerprint)
     return cfg

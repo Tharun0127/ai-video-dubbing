@@ -10,11 +10,18 @@ Cache semantics: a result is looked up before any socket is opened. On a hit the
 call costs zero rupees and issues zero network traffic. Under --dry-run a miss is
 a hard failure (CacheMissError) rather than a silent network call.
 
-Confirmed against docs.sarvam.ai on 2026-07-28 (see docs/api-notes.md):
-  POST https://api.sarvam.ai/speech-to-text   multipart/form-data
+Confirmed against docs.sarvam.ai and real calls (see docs/api-notes.md):
+  POST https://api.sarvam.ai/speech-to-text   multipart/form-data   (2026-07-28)
   header: api-subscription-key            (auth failure returns 403, not 401)
   fields: file, model, mode, language_code, input_audio_codec
   limits: 30 s of audio per request; 16 kHz mono WAV recommended
+
+  POST https://api.sarvam.ai/translate       application/json       (2026-07-29)
+  fields: input, source_language_code, target_language_code, model, mode,
+          speaker_gender, output_script, numerals_format
+  returns: {request_id, translated_text, source_language_code}
+  limits: 1000 chars for mayura:v1, 2000 for sarvam-translate:v1 (HTTP 422 beyond);
+          style modes are honoured only by mayura:v1
 
 Input:  a Config, a DiskCache, and a MetricsCollector.
 Output: parsed API response dicts, with every call recorded in metrics.
@@ -31,15 +38,22 @@ from typing import Any, Callable
 
 import requests
 
-from .cache import CacheMissError, DiskCache, cache_key, hash_file
+from .cache import CacheMissError, DiskCache, cache_key, hash_file, hash_text
 from .config import (
     ASR_LANGUAGES,
     ASR_MAX_AUDIO_S,
     ASR_MODES,
     AUTH_HEADER,
+    TRANSLATE_MODEL_LANGUAGES,
+    TRANSLATE_MODEL_MAX_CHARS,
+    TRANSLATE_MODEL_MODES,
+    TRANSLATE_MODELS,
+    TRANSLATE_NUMERALS_FORMATS,
+    TRANSLATE_OUTPUT_SCRIPTS,
+    TRANSLATE_SPEAKER_GENDERS,
     Config,
 )
-from .metrics import ApiCall, MetricsCollector, cost_stt_inr
+from .metrics import ApiCall, MetricsCollector, cost_stt_inr, cost_translate_inr
 
 logger = logging.getLogger(__name__)
 
@@ -165,6 +179,101 @@ class SarvamClient:
             "ASR %s (%s, %.2fs audio) -> %s",
             path.name, "CACHE HIT" if was_cached else "network call", audio_duration_s,
             f"{len(payload.get('transcript', ''))} chars",
+        )
+        return payload
+
+    def translate(
+        self,
+        text: str,
+        *,
+        source_language_code: str,
+        target_language_code: str,
+        model: str | None = None,
+        mode: str | None = None,
+        speaker_gender: str | None = None,
+        output_script: str | None = None,
+        numerals_format: str | None = None,
+        stage: str = "translate",
+    ) -> dict[str, Any]:
+        """Translate one text via POST /translate; returns the parsed response dict."""
+        resolved_model = model or self.config.translate_model
+        if resolved_model not in TRANSLATE_MODELS:
+            raise SarvamAPIError(
+                f"model {resolved_model!r} is not one of {sorted(TRANSLATE_MODELS)}"
+            )
+        if not text.strip():
+            raise SarvamAPIError("refusing to translate empty text; it would bill for nothing")
+
+        max_chars = TRANSLATE_MODEL_MAX_CHARS[resolved_model]
+        if len(text) > max_chars:
+            raise SarvamAPIError(
+                f"input is {len(text)} chars but {resolved_model} caps at {max_chars} "
+                f"(HTTP 422 beyond it). Batch fewer segments per request."
+            )
+
+        allowed_modes = TRANSLATE_MODEL_MODES[resolved_model]
+        if mode is not None:
+            if mode not in allowed_modes:
+                # The API accepts an unsupported mode and silently ignores it, so this
+                # check is the only thing standing between a "colloquial" run and a
+                # formal one that merely claims to be colloquial.
+                raise SarvamAPIError(
+                    f"mode {mode!r} is not supported by {resolved_model}; it honours "
+                    f"{sorted(allowed_modes)}"
+                )
+        languages = TRANSLATE_MODEL_LANGUAGES[resolved_model]
+        for code, label in ((source_language_code, "source"), (target_language_code, "target")):
+            if code not in languages:
+                raise SarvamAPIError(
+                    f"{label}_language_code {code!r} is not supported by {resolved_model}"
+                )
+        if speaker_gender is not None and speaker_gender not in TRANSLATE_SPEAKER_GENDERS:
+            raise SarvamAPIError(
+                f"speaker_gender {speaker_gender!r} is not one of {sorted(TRANSLATE_SPEAKER_GENDERS)}"
+            )
+        if output_script is not None and output_script not in TRANSLATE_OUTPUT_SCRIPTS:
+            raise SarvamAPIError(
+                f"output_script {output_script!r} is not one of {sorted(TRANSLATE_OUTPUT_SCRIPTS)}"
+            )
+        if numerals_format is not None and numerals_format not in TRANSLATE_NUMERALS_FORMATS:
+            raise SarvamAPIError(
+                f"numerals_format {numerals_format!r} is not one of "
+                f"{sorted(TRANSLATE_NUMERALS_FORMATS)}"
+            )
+
+        params: dict[str, Any] = {
+            "model": resolved_model,
+            "source_language_code": source_language_code,
+            "target_language_code": target_language_code,
+            "mode": mode,
+            "speaker_gender": speaker_gender,
+            "output_script": output_script,
+            "numerals_format": numerals_format,
+        }
+
+        def do_request() -> tuple[dict[str, Any], int, bytes | None]:
+            """Perform the JSON POST; returns (payload, status, binary=None)."""
+            body = {k: v for k, v in params.items() if v is not None}
+            body["input"] = text
+            response = self._request("POST", "/translate", json=body)
+            return response.json(), response.status_code, None
+
+        payload, was_cached = self._cached_call(
+            stage=stage,
+            endpoint="/translate",
+            model=resolved_model,
+            params=params,
+            input_hash=hash_text(text),
+            billable_units=float(len(text)),
+            billable_unit_name="input_characters",
+            list_price_inr=cost_translate_inr(len(text)),
+            do_request=do_request,
+        )
+        logger.info(
+            "translate %s (%s, %d chars in -> %d chars out)",
+            f"{source_language_code}->{target_language_code} mode={mode or 'default'}",
+            "CACHE HIT" if was_cached else "network call",
+            len(text), len(payload.get("translated_text", "")),
         )
         return payload
 

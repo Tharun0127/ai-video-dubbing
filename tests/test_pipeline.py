@@ -79,16 +79,16 @@ def test_stages_to_run_honours_single_stage(config: Config) -> None:
 
 
 def test_unimplemented_stage_names_its_milestone(config: Config) -> None:
-    """A stage that has not been built says which milestone delivers it (demux/asr landed in M2)."""
-    with pytest.raises(StageNotImplementedError, match="M3"):
-        run_stage("translate", config, client=None, metrics=MetricsCollector())  # type: ignore[arg-type]
+    """A stage that has not been built says which milestone delivers it (translate landed in M3)."""
+    with pytest.raises(StageNotImplementedError, match="M4"):
+        run_stage("tts", config, client=None, metrics=MetricsCollector())  # type: ignore[arg-type]
 
 
 # --- run loop ----------------------------------------------------------------------------
 
 def test_run_writes_metrics_even_when_a_stage_fails(config: Config, tiny_wav: Path) -> None:
     """A crash still leaves measurements on disk; that is how a run gets debugged."""
-    cfg = Config(**{**config.__dict__, "input_path": tiny_wav, "stage": "translate"})
+    cfg = Config(**{**config.__dict__, "input_path": tiny_wav, "stage": "tts"})
     metrics = MetricsCollector()
 
     assert run(cfg, metrics) == EXIT_NOT_IMPLEMENTED
@@ -98,7 +98,7 @@ def test_run_writes_metrics_even_when_a_stage_fails(config: Config, tiny_wav: Pa
 
 def test_run_records_the_measured_input_duration(config: Config, tiny_wav: Path) -> None:
     """The input duration in metrics.json is probed, never assumed."""
-    cfg = Config(**{**config.__dict__, "input_path": tiny_wav, "stage": "translate"})
+    cfg = Config(**{**config.__dict__, "input_path": tiny_wav, "stage": "tts"})
     metrics = MetricsCollector()
     run(cfg, metrics)
     assert metrics.input_info["duration_s"] == pytest.approx(0.5, abs=0.01)
