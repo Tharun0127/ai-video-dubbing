@@ -1,0 +1,12 @@
+{
+  "_captured": "2026-07-28 from a real POST https://api.sarvam.ai/speech-to-text",
+  "_request": {
+    "model": "saaras:v3",
+    "mode": "transcribe",
+    "language_code": "en-IN",
+    "file": "samples/jfk_10s_16k_mono.wav (10.000s, 16kHz mono PCM)"
+  },
+  "request_id": "20260728_f6f380b8-b633-4175-8594-c550850646e1",
+  "transcript": "Almighty God, the same Solomon are forebears prescribed nearly a century and three quarters ago.",
+  "language_code": "en-IN"
+}
