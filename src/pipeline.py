@@ -26,7 +26,19 @@ from pathlib import Path
 from typing import Sequence
 
 from .cache import CacheMissError, DiskCache
-from .config import STAGE_ORDER, Config, ConfigError, load_config, setup_logging
+from .config import (
+    ASR_MODES,
+    MAX_CHUNK_S,
+    MAX_SEGMENT_S,
+    MIN_SEGMENT_S,
+    MIN_SILENCE_S,
+    SILENCE_THRESHOLD_DB,
+    STAGE_ORDER,
+    Config,
+    ConfigError,
+    load_config,
+    setup_logging,
+)
 from .metrics import MetricsCollector
 from .sarvam_client import SarvamAPIError, SarvamClient
 
@@ -76,6 +88,21 @@ def build_arg_parser() -> argparse.ArgumentParser:
                         help="Where to write metrics.json (defaults to <output dir>/metrics.json).")
     parser.add_argument("--verbose", action="store_true",
                         help="Enable DEBUG logging, including API request/response bodies.")
+
+    chunking = parser.add_argument_group("chunking and segmentation (M2)")
+    chunking.add_argument("--asr-mode", default="transcribe", choices=sorted(ASR_MODES),
+                          help="Saaras output mode.")
+    chunking.add_argument("--silence-threshold-db", type=float, default=SILENCE_THRESHOLD_DB,
+                          help="dBFS below which audio counts as silence (relaxed automatically "
+                               "if a clip's noise floor sits above it).")
+    chunking.add_argument("--min-silence-s", type=float, default=MIN_SILENCE_S,
+                          help="Shortest pause treated as a legal chunk boundary.")
+    chunking.add_argument("--max-chunk-s", type=float, default=MAX_CHUNK_S,
+                          help="Longest audio chunk per ASR request (API cap is 30s).")
+    chunking.add_argument("--min-segment-s", type=float, default=MIN_SEGMENT_S,
+                          help="Segments shorter than this are merged into a neighbour.")
+    chunking.add_argument("--max-segment-s", type=float, default=MAX_SEGMENT_S,
+                          help="Segments longer than this are split at a sentence boundary.")
     return parser
 
 
@@ -84,12 +111,37 @@ def stages_to_run(config: Config) -> tuple[str, ...]:
     return (config.stage,) if config.stage else STAGE_ORDER
 
 
-def run_stage(name: str, config: Config, client: SarvamClient, metrics: MetricsCollector) -> None:
+def run_stage(
+    name: str,
+    config: Config,
+    client: SarvamClient,
+    metrics: MetricsCollector,
+    state: dict[str, object] | None = None,
+) -> None:
     """Dispatch one named stage; unimplemented stages name the milestone that delivers them."""
+    state = state if state is not None else {}
+
+    if name == "demux":
+        from .stages.demux import run_demux
+
+        result = run_demux(config)
+        state["wav_path"] = result.wav_path
+        state["demux"] = result
+        return
+
+    if name == "asr":
+        from .stages.asr import run_asr
+
+        # Falls back to the file demux writes, so `--stage asr` resumes from disk without
+        # re-running the earlier stage.
+        run_asr(config, client, metrics, wav_path=state.get("wav_path"))  # type: ignore[arg-type]
+        return
+
     milestone = STAGE_MILESTONE.get(name, "a later milestone")
     raise StageNotImplementedError(
         f"stage {name!r} is not implemented yet -- it arrives in {milestone}. "
-        f"Milestone 1 delivers config, cache, metrics, the Sarvam client, and this CLI."
+        f"Milestones 1-2 deliver config, cache, metrics, the Sarvam client, this CLI, "
+        f"demux, and chunked ASR."
     )
 
 
@@ -118,12 +170,13 @@ def run(config: Config, metrics: MetricsCollector | None = None) -> int:
     metrics_path = config.output_dir / "metrics.json"
     exit_code = EXIT_OK
     completed: list[str] = []
+    state: dict[str, object] = {}
 
     with SarvamClient(config, cache=cache, metrics=metrics) as client:
         try:
             for stage in stages_to_run(config):
                 with metrics.time_stage(stage):
-                    run_stage(stage, config, client, metrics)
+                    run_stage(stage, config, client, metrics, state)
                 completed.append(stage)
         except StageNotImplementedError as exc:
             logger.error("%s", exc)
@@ -164,6 +217,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             stage=args.stage,
             verbose=args.verbose,
             cache_dir=args.cache_dir,
+            asr_mode=args.asr_mode,
+            silence_threshold_db=args.silence_threshold_db,
+            min_silence_s=args.min_silence_s,
+            max_chunk_s=args.max_chunk_s,
+            min_segment_s=args.min_segment_s,
+            max_segment_s=args.max_segment_s,
         )
     except ConfigError as exc:
         logger.error("configuration error: %s", exc)

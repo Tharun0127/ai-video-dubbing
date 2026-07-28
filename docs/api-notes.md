@@ -108,7 +108,26 @@ intra-chunk timing.
 **Consequence for M2:** segment boundaries cannot come from the sync endpoint's
 timestamps. Either (a) derive boundaries locally from silence detection and treat each
 chunk as one segment, or (b) use the Batch API, which documents real timestamps and
-diarization. This is an open decision — see "Open questions" below.
+diarization. **Decided: (a), chunked REST** — see the M2 section below.
+
+#### Re-confirmed on the M2 chunks, 2026-07-29
+
+Both chunks of `samples/test_clip.mp4` were sent with `with_timestamps=true`. Both came
+back with exactly one span covering the whole chunk, confirming the M1 observation is the
+endpoint's steady-state behaviour and not an artefact of the 10 s clip:
+
+| chunk | audio sent | spans returned | span extent | request_id |
+| --- | --- | --- | --- | --- |
+| 0 | 25.270 s | 1 | whole chunk | `20260728_cd422caf-81f1-4c01-8875-f13a366d9578` |
+| 1 | 10.837 s | 1 | whole chunk | `20260728_999dcba3-8535-427f-9156-80589aad54ae` |
+
+`local_spans_from_payload` labels this `api_single_span` and falls back to the chunk
+extent. It also handles the multi-span shape, so Batch API word timings drop in without a
+rewrite — and `tests/test_asr_stitch.py` exercises that path on synthetic spans today.
+
+**Wire format gotcha:** `with_timestamps` is a multipart form field, so a Python `True`
+serialises as the string `"True"`, which the API does not accept. `sarvam_client.py`
+lowercases booleans to `"true"`/`"false"` on the way out.
 
 ### `with_diarization` on the sync endpoint
 
@@ -158,6 +177,47 @@ From `https://docs.sarvam.ai/api/getting-started/ratelimits.md`, confirmed 2026-
 
 ---
 
+## M2 decision — chunked REST, and the tradeoff
+
+**Chosen: (a) chunked REST.** Reasons, in order of weight:
+
+1. **Synchronous and debuggable.** Every chunk is a self-contained request/response pair
+   with its own `request_id`, cached under its own key. A failure names the chunk, and a
+   re-run costs nothing. Batch would add submit-and-poll state to debug on top of the
+   chunking logic that a 30 s cap forces on us anyway.
+2. **The Batch API's main advantage does not pay off yet.** Its selling points are real
+   timestamps and diarization. Diarization is an explicit v1 non-goal (SPEC.md), and the
+   timestamps only matter if segment boundaries come from the API — which, for this
+   pipeline, they deliberately do not (see below).
+3. **Cost is identical.** STT is ₹30/hour billed per second either way. Chunking bills the
+   same total audio; it does not bill per request.
+
+**What we give up:** segment boundaries are only as good as local silence detection, and a
+speaker who never pauses for >30 s would force a mid-word cut. The planner detects that
+case, warns, and records `cut_source: "hard"` on the chunk rather than hiding it.
+
+**Migration path if timing turns out to be the bottleneck at M6:** `stitch_chunk_transcripts`
+already accepts multiple spans per chunk and offsets each one, so swapping in Batch
+timestamps means changing only `local_spans_from_payload`.
+
+### Silence threshold — measured, not assumed
+
+`samples/test_clip.mp4` has a **mean volume of -26.0 dB** (ffmpeg `volumedetect`), so the
+SPEC's -40 dB default finds only the trailing pause and no interior cut point at all:
+
+| threshold | min pause | silences found | hard cuts |
+| --- | --- | --- | --- |
+| -40 dB | 0.30 s | 1 (trailing only) | 1 |
+| -35 dB | 0.30 s | 1 (trailing only) | 1 |
+| **-30 dB** | **0.30 s** | **4** | **0** ← accepted |
+
+`plan_chunks_adaptive` keeps -40 dB as the default and escalates through a fixed ladder
+only when the current level would force a hard cut, logging a WARNING and recording every
+attempt in `asr_report.json`. Silently shipping a mid-word cut, or silently redefining the
+documented default, would both be worse than saying which threshold actually ran.
+
+---
+
 ## Not yet confirmed (do before implementing)
 
 These will be filled in at the milestone that needs them, following the same rule:
@@ -170,13 +230,11 @@ fetch the docs, make one real call, record what came back.
   audio format/sample rate, and above all **the semantics of `pace`** — whether a value
   above 1.0 means faster or slower speech. The duration-fit update rule must be inverted
   if the sense is reversed, so this gets a dedicated real-call check.
-- **Batch Speech-to-Text** (M2, if chosen): job submission, polling, timestamp granularity,
-  and whether its per-second price differs from the sync endpoint.
+- **Batch Speech-to-Text** (only if M6 shows timing is the bottleneck): job submission,
+  polling, timestamp granularity, and whether its per-second price differs from the sync
+  endpoint.
 
 ## Open questions for the project owner
 
-1. **M2 ASR strategy.** The sync endpoint's `with_timestamps` returns one span per chunk,
-   so chunked-REST segment boundaries would be exactly the silence-split boundaries — the
-   timing is only as good as the local silence detection. The Batch API documents real
-   timestamps plus diarization. Chunked REST is simpler and synchronous; Batch needs
-   submit-and-poll but gives genuinely better timing. Which do we build?
+_None outstanding. The M2 ASR-strategy question was answered: chunked REST — see the M2
+decision section above._

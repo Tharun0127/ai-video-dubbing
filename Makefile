@@ -4,7 +4,10 @@ OUTPUT  ?= output/dubbed.mp4
 SRC     ?= en-IN
 TGT     ?= hi-IN
 
-.PHONY: help install test verify verify-free test-api test-api-free run dry-run clean-cache clean
+CLIP    ?= samples/test_clip.mp4
+
+.PHONY: help install test verify verify-free verify-m2 test-api test-api-free \
+        demux asr run dry-run clean-cache clean
 
 help:  ## Show the available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk -F':.*?## ' '{printf "  %-14s %s\n", $$1, $$2}'
@@ -26,6 +29,15 @@ test-api:  ## M1 live API test on samples/test_audio.wav (one real call, then ca
 
 test-api-free:  ## Re-prove the M1 live API test from the warm cache, costing zero rupees
 	$(PYTHON) -m src.test_m1_api --reuse-cache
+
+demux:  ## M2: extract $(CLIP)'s audio to 16 kHz mono PCM WAV
+	$(PYTHON) -m src.pipeline --input $(CLIP) --stage demux
+
+asr:  ## M2: chunk under the 30s cap, transcribe, stitch, and write segments.json
+	$(PYTHON) -m src.pipeline --input $(CLIP) --stage asr
+
+verify-m2:  ## M2 acceptance: chunk plan, audio integrity, seams, timeline, cache
+	$(PYTHON) -m scripts.m2_verify --input $(CLIP)
 
 run:  ## Run the pipeline end to end
 	$(PYTHON) -m src.pipeline --input $(INPUT) --output $(OUTPUT) \

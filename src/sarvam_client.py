@@ -104,6 +104,7 @@ class SarvamClient:
         mode: str = "transcribe",
         language_code: str | None = None,
         input_audio_codec: str | None = None,
+        with_timestamps: bool | None = None,
         audio_duration_s: float | None = None,
         stage: str = "asr",
     ) -> dict[str, Any]:
@@ -133,11 +134,17 @@ class SarvamClient:
             "mode": mode,
             "language_code": language_code,
             "input_audio_codec": input_audio_codec,
+            "with_timestamps": with_timestamps,
         }
 
         def do_request() -> tuple[dict[str, Any], int, bytes | None]:
             """Perform the multipart POST; returns (payload, status, binary=None)."""
-            form = {k: v for k, v in params.items() if v is not None and k != "file"}
+            # Booleans must go over the wire as the lowercase JSON spelling; requests
+            # would otherwise send Python's "True", which the API rejects.
+            form = {
+                k: ("true" if v is True else "false" if v is False else v)
+                for k, v in params.items() if v is not None and k != "file"
+            }
             with open(path, "rb") as handle:
                 files = {"file": (path.name, handle, "audio/wav")}
                 response = self._request("POST", "/speech-to-text", data=form, files=files)

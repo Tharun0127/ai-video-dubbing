@@ -76,6 +76,27 @@ STAGE_ORDER: tuple[str, ...] = (
     "demux", "asr", "translate", "tts", "assemble", "mux", "qc",
 )
 
+# --------------------------------------------------------------------------------------
+# M2 chunking and segmentation defaults (see src/stages/asr.py for the rationale)
+# --------------------------------------------------------------------------------------
+
+#: Silence threshold in dBFS. Quieter than this for MIN_SILENCE_S counts as a pause worth
+#: cutting on. Relaxed automatically (with a WARNING) if a clip's noise floor sits above it.
+SILENCE_THRESHOLD_DB = -40.0
+
+#: Shortest pause treated as a legal cut point; below this it is usually a stop consonant.
+MIN_SILENCE_S = 0.30
+
+#: Longest chunk sent to /speech-to-text. Kept at the API cap; chunks are usually smaller
+#: because the planner balances them across the clip.
+MAX_CHUNK_S = ASR_MAX_AUDIO_S
+
+#: Segments shorter than this make M4 duration fitting unstable, so they are merged.
+MIN_SEGMENT_S = 1.0
+
+#: Segments longer than this make timing drift unrecoverable, so they are split.
+MAX_SEGMENT_S = 15.0
+
 
 class ConfigError(RuntimeError):
     """Raised when configuration is missing or invalid; never swallowed silently."""
@@ -116,6 +137,14 @@ class Config:
     asr_model: str = ASR_MODEL
     translate_model: str = TRANSLATE_MODEL
     tts_model: str = TTS_MODEL
+    asr_mode: str = "transcribe"
+
+    # --- chunking & segmentation (M2) ----------------------------------------------
+    silence_threshold_db: float = SILENCE_THRESHOLD_DB
+    min_silence_s: float = MIN_SILENCE_S
+    max_chunk_s: float = MAX_CHUNK_S
+    min_segment_s: float = MIN_SEGMENT_S
+    max_segment_s: float = MAX_SEGMENT_S
 
     #: Populated in __post_init__; kept out of __repr__ so the key is never printed.
     _redacted: bool = field(default=True, repr=False)
@@ -157,6 +186,29 @@ class Config:
             )
         if self.max_segments is not None and self.max_segments < 1:
             raise ConfigError("--max-segments must be >= 1")
+        if self.asr_mode not in ASR_MODES:
+            raise ConfigError(
+                f"asr_mode {self.asr_mode!r} is not one of {sorted(ASR_MODES)}"
+            )
+        if self.silence_threshold_db >= 0:
+            raise ConfigError(
+                f"--silence-threshold-db is dBFS and must be negative, got "
+                f"{self.silence_threshold_db}"
+            )
+        if self.min_silence_s <= 0:
+            raise ConfigError(f"--min-silence-s must be > 0, got {self.min_silence_s}")
+        if not 0 < self.max_chunk_s <= ASR_MAX_AUDIO_S:
+            raise ConfigError(
+                f"--max-chunk-s must be in (0, {ASR_MAX_AUDIO_S:.0f}]; the sync "
+                f"/speech-to-text endpoint returns HTTP 422 beyond that. Got {self.max_chunk_s}"
+            )
+        if self.min_segment_s <= 0:
+            raise ConfigError(f"--min-segment-s must be > 0, got {self.min_segment_s}")
+        if self.max_segment_s <= self.min_segment_s:
+            raise ConfigError(
+                f"--max-segment-s ({self.max_segment_s}) must exceed --min-segment-s "
+                f"({self.min_segment_s})"
+            )
 
     def __repr__(self) -> str:  # pragma: no cover - trivial
         """Repr with the API key redacted, so configs are safe to log."""
@@ -187,6 +239,12 @@ def load_config(
     verbose: bool = False,
     cache_dir: str | os.PathLike[str] | None = None,
     env_file: str | os.PathLike[str] | None = None,
+    asr_mode: str = "transcribe",
+    silence_threshold_db: float = SILENCE_THRESHOLD_DB,
+    min_silence_s: float = MIN_SILENCE_S,
+    max_chunk_s: float = MAX_CHUNK_S,
+    min_segment_s: float = MIN_SEGMENT_S,
+    max_segment_s: float = MAX_SEGMENT_S,
 ) -> Config:
     """Load .env, merge it with CLI arguments, and return a validated Config."""
     load_dotenv(dotenv_path=env_file, override=False)
@@ -209,6 +267,12 @@ def load_config(
         verbose=verbose,
         cache_dir=resolved_cache,
         output_dir=Path(output_path).parent or Path("output"),
+        asr_mode=asr_mode,
+        silence_threshold_db=silence_threshold_db,
+        min_silence_s=min_silence_s,
+        max_chunk_s=max_chunk_s,
+        min_segment_s=min_segment_s,
+        max_segment_s=max_segment_s,
     )
     logger.debug("Loaded %r (key %s)", cfg, cfg.key_fingerprint)
     return cfg
