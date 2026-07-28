@@ -19,11 +19,9 @@ from __future__ import annotations
 
 import argparse
 import json
-import socket
 import sys
-from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Generator
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -33,30 +31,8 @@ from src.config import load_config, setup_logging  # noqa: E402
 from src.metrics import MetricsCollector, cost_stt_inr  # noqa: E402
 from src.sarvam_client import SarvamClient  # noqa: E402
 
-
-class NetworkAccessError(AssertionError):
-    """Raised when code attempts a network connection while the socket guard is armed."""
-
-
-@contextmanager
-def no_network_allowed() -> Generator[None]:
-    """Block every outbound socket connection, so a 'cache hit' claim can be proven."""
-    real_connect = socket.socket.connect
-    real_create = socket.create_connection
-
-    def blocked_connect(self: socket.socket, address: Any) -> None:
-        raise NetworkAccessError(f"network access attempted to {address!r} while cache-only")
-
-    def blocked_create(address: Any, *args: Any, **kwargs: Any) -> None:
-        raise NetworkAccessError(f"network access attempted to {address!r} while cache-only")
-
-    socket.socket.connect = blocked_connect  # type: ignore[method-assign]
-    socket.create_connection = blocked_create  # type: ignore[assignment]
-    try:
-        yield
-    finally:
-        socket.socket.connect = real_connect  # type: ignore[method-assign]
-        socket.create_connection = real_create  # type: ignore[assignment]
+# One implementation of the socket guard, shared with `python -m src.test_m1_api`.
+from src.test_m1_api import NetworkAccessError, no_network_allowed  # noqa: E402,F401
 
 
 def summarise(label: str, metrics: MetricsCollector, cache: DiskCache) -> dict[str, Any]:

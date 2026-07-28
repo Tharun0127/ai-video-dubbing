@@ -4,7 +4,7 @@ OUTPUT  ?= output/dubbed.mp4
 SRC     ?= en-IN
 TGT     ?= hi-IN
 
-.PHONY: help install test verify run dry-run clean-cache clean
+.PHONY: help install test verify verify-free test-api test-api-free run dry-run clean-cache clean
 
 help:  ## Show the available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk -F':.*?## ' '{printf "  %-14s %s\n", $$1, $$2}'
@@ -20,6 +20,12 @@ verify:  ## M1 acceptance: real ASR call, then the identical call served from ca
 
 verify-free:  ## Re-prove M1 from the warm cache, costing zero rupees
 	$(PYTHON) -m scripts.m1_verify --input $(INPUT) --reuse-cache
+
+test-api:  ## M1 live API test on samples/test_audio.wav (one real call, then cached)
+	$(PYTHON) -m src.test_m1_api
+
+test-api-free:  ## Re-prove the M1 live API test from the warm cache, costing zero rupees
+	$(PYTHON) -m src.test_m1_api --reuse-cache
 
 run:  ## Run the pipeline end to end
 	$(PYTHON) -m src.pipeline --input $(INPUT) --output $(OUTPUT) \
