@@ -32,6 +32,9 @@ from .config import (
     MAX_SEGMENT_S,
     MIN_SEGMENT_S,
     MIN_SILENCE_S,
+    FIT_MAX_ATTEMPTS,
+    FIT_RATIO_MAX,
+    FIT_RATIO_MIN,
     SILENCE_THRESHOLD_DB,
     STAGE_ORDER,
     TRANSLATE_CONTEXT_SEGMENTS,
@@ -40,6 +43,13 @@ from .config import (
     TRANSLATE_MODEL,
     TRANSLATE_MODELS,
     TRANSLATE_MODES,
+    TTS_PERCEPTUAL_PACE_MAX,
+    TTS_PERCEPTUAL_PACE_MIN,
+    TTS_SAMPLE_RATE,
+    TTS_SAMPLE_RATES,
+    TTS_SPEAKER,
+    TTS_SPEAKERS_V3,
+    TTS_TRIM_THRESHOLD_DB,
     Config,
     ConfigError,
     load_config,
@@ -129,6 +139,28 @@ def build_arg_parser() -> argparse.ArgumentParser:
     translation.add_argument("--translate-no-batch", action="store_true",
                              help="Send one request per segment, with no context window "
                                   "(for the batching before/after comparison).")
+
+    synthesis = parser.add_argument_group("TTS and duration fitting (M4)")
+    synthesis.add_argument("--tts-speaker", default=TTS_SPEAKER, choices=sorted(TTS_SPEAKERS_V3),
+                           help="Bulbul voice (lowercase, model-specific).")
+    synthesis.add_argument("--tts-sample-rate", type=int, default=TTS_SAMPLE_RATE,
+                           choices=sorted(TTS_SAMPLE_RATES),
+                           help="Output sample rate in Hz.")
+    synthesis.add_argument("--fit-max-attempts", type=int, default=FIT_MAX_ATTEMPTS,
+                           help="Synthesis calls per segment, including the pace=1.0 baseline.")
+    synthesis.add_argument("--fit-ratio-min", type=float, default=FIT_RATIO_MIN,
+                           help="Lower edge of the achieved/target band counted as fitted.")
+    synthesis.add_argument("--fit-ratio-max", type=float, default=FIT_RATIO_MAX,
+                           help="Upper edge of the achieved/target band counted as fitted.")
+    synthesis.add_argument("--pace-min", type=float, default=TTS_PERCEPTUAL_PACE_MIN,
+                           help="Slowest pace the loop may request. Deliberately tighter "
+                                "than the API's 0.5 (see SPEC.md).")
+    synthesis.add_argument("--pace-max", type=float, default=TTS_PERCEPTUAL_PACE_MAX,
+                           help="Fastest pace the loop may request. Deliberately tighter "
+                                "than the API's 2.0 (see SPEC.md).")
+    synthesis.add_argument("--trim-threshold-db", type=float, default=TTS_TRIM_THRESHOLD_DB,
+                           help="dBFS below which TTS output is treated as silence and "
+                                "trimmed before its duration is measured.")
     return parser
 
 
@@ -171,11 +203,19 @@ def run_stage(
         state["translate"] = run_translate(config, client, metrics)
         return
 
+    if name == "tts":
+        from .stages.tts import run_tts
+
+        # Reads output/segments.json, so `--stage tts` resumes from disk without
+        # re-running demux, ASR, or translation.
+        state["tts"] = run_tts(config, client, metrics)
+        return
+
     milestone = STAGE_MILESTONE.get(name, "a later milestone")
     raise StageNotImplementedError(
         f"stage {name!r} is not implemented yet -- it arrives in {milestone}. "
-        f"Milestones 1-3 deliver config, cache, metrics, the Sarvam client, this CLI, "
-        f"demux, chunked ASR, and per-segment translation."
+        f"Milestones 1-4 deliver config, cache, metrics, the Sarvam client, this CLI, "
+        f"demux, chunked ASR, per-segment translation, and TTS with duration fitting."
     )
 
 
@@ -262,6 +302,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             translate_batch_segments=args.translate_batch_segments,
             translate_context_segments=args.translate_context_segments,
             translate_no_batch=args.translate_no_batch,
+            tts_speaker=args.tts_speaker,
+            tts_sample_rate=args.tts_sample_rate,
+            fit_ratio_min=args.fit_ratio_min,
+            fit_ratio_max=args.fit_ratio_max,
+            fit_max_attempts=args.fit_max_attempts,
+            pace_min=args.pace_min,
+            pace_max=args.pace_max,
+            trim_threshold_db=args.trim_threshold_db,
         )
     except ConfigError as exc:
         logger.error("configuration error: %s", exc)

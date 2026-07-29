@@ -81,10 +81,37 @@ TRANSLATE_SPEAKER_GENDERS: frozenset[str] = frozenset({"Male", "Female"})
 
 #: Bulbul's documented pace range. The pipeline deliberately clamps tighter than this
 #: (see SPEC.md) because speech stops sounding human beyond roughly +/-25%.
+#:
+#: Direction confirmed by real calls, not by reading the docs alone (scripts/m4_probe.py,
+#: recorded in docs/api-notes.md): a HIGHER pace produces SHORTER audio, i.e. faster
+#: speech. The fit loop's `pace *= ratio` update depends on that sign and would drive the
+#: wrong way if it were reversed.
 TTS_API_PACE_MIN = 0.5
 TTS_API_PACE_MAX = 2.0
 TTS_PERCEPTUAL_PACE_MIN = 0.85
 TTS_PERCEPTUAL_PACE_MAX = 1.25
+
+#: Models and voices confirmed on docs.sarvam.ai (2026-07-29).
+TTS_MODELS: frozenset[str] = frozenset({"bulbul:v3", "bulbul:v2"})
+
+#: bulbul:v3's documented speaker list, lowercase as the API requires.
+TTS_SPEAKERS_V3: frozenset[str] = frozenset(
+    {
+        "shubh", "aditya", "ritu", "priya", "neha", "rahul", "pooja", "rohan", "simran",
+        "kavya", "amit", "dev", "ishita", "shreya", "ratan", "varun", "manan", "sumit",
+        "roopa", "kabir", "aayan", "ashutosh", "advait", "anand", "tanya", "tarun",
+        "sunny", "mani", "gokul", "vijay", "shruti", "suhani", "mohit", "kavitha",
+        "rehan", "soham", "rupali",
+    }
+)
+
+#: Fixed speaker for v1 (SPEC.md defers voice selection and cloning to the stretch list).
+TTS_SPEAKER = "shubh"
+
+#: Output format. 24 kHz is the documented v3 default; WAV keeps decoding in the stdlib.
+TTS_SAMPLE_RATE = 24000
+TTS_SAMPLE_RATES: frozenset[int] = frozenset({8000, 16000, 22050, 24000, 32000, 44100, 48000})
+TTS_OUTPUT_CODEC = "wav"
 
 #: Published prices in INR (docs.sarvam.ai/api/getting-started/pricing).
 PRICE_STT_INR_PER_HOUR = 30.0
@@ -119,6 +146,10 @@ TRANSLATE_MODEL_LANGUAGES: dict[str, frozenset[str]] = {
     "sarvam-translate:v1": TRANSLATE_LANGUAGES,
     "mayura:v1": MAYURA_LANGUAGES,
 }
+
+#: Languages bulbul:v3 can speak -- documented as the same 11 mayura:v1 translates into,
+#: which is convenient: any target the translator accepts, the synthesiser can voice.
+TTS_LANGUAGES: frozenset[str] = MAYURA_LANGUAGES
 
 #: Pipeline stage names, in execution order. Used by --stage and by metrics.
 STAGE_ORDER: tuple[str, ...] = (
@@ -172,6 +203,27 @@ TRANSLATE_CONTEXT_SEGMENTS = 2
 #: longer than the request for en->hi, and the cap applies to the input, so this is purely
 #: a safety margin against an off-by-a-few packing bug, not an API requirement.
 TRANSLATE_BATCH_FILL = 0.8
+
+# --------------------------------------------------------------------------------------
+# M4 TTS + duration-fit defaults (see src/stages/tts.py for the loop itself)
+# --------------------------------------------------------------------------------------
+
+#: A segment is "fitted" once achieved/target lands inside this band. Widening it saves
+#: credits; narrowing it burns attempts chasing drift no listener can hear.
+FIT_RATIO_MIN = 0.95
+FIT_RATIO_MAX = 1.05
+
+#: Hard ceiling on synthesis calls per segment, including the pace=1.0 baseline.
+FIT_MAX_ATTEMPTS = 3
+
+#: Once a proposed pace moves less than this, the loop has either converged or is pinned
+#: against a clamp; continuing just spends credits for an inaudible change.
+FIT_MIN_PACE_STEP = 0.02
+
+#: Silence-trim settings applied to every TTS response before it is measured.
+TTS_TRIM_THRESHOLD_DB = -40.0
+TTS_TRIM_WINDOW_MS = 10.0
+TTS_TRIM_KEEP_MARGIN_MS = 20.0
 
 
 class ConfigError(RuntimeError):
@@ -228,6 +280,16 @@ class Config:
     translate_context_segments: int = TRANSLATE_CONTEXT_SEGMENTS
     #: Disable batching entirely and send one request per segment (for A/B measurement).
     translate_no_batch: bool = False
+
+    # --- TTS + duration fit (M4) ----------------------------------------------------
+    tts_speaker: str = TTS_SPEAKER
+    tts_sample_rate: int = TTS_SAMPLE_RATE
+    fit_ratio_min: float = FIT_RATIO_MIN
+    fit_ratio_max: float = FIT_RATIO_MAX
+    fit_max_attempts: int = FIT_MAX_ATTEMPTS
+    pace_min: float = TTS_PERCEPTUAL_PACE_MIN
+    pace_max: float = TTS_PERCEPTUAL_PACE_MAX
+    trim_threshold_db: float = TTS_TRIM_THRESHOLD_DB
 
     #: Populated in __post_init__; kept out of __repr__ so the key is never printed.
     _redacted: bool = field(default=True, repr=False)
@@ -325,6 +387,40 @@ class Config:
             raise ConfigError("--translate-batch-segments must be >= 1")
         if self.translate_context_segments < 0:
             raise ConfigError("--translate-context-segments must be >= 0")
+        if self.tts_model not in TTS_MODELS:
+            raise ConfigError(f"tts_model {self.tts_model!r} is not one of {sorted(TTS_MODELS)}")
+        if self.tts_model == "bulbul:v3" and self.tts_speaker not in TTS_SPEAKERS_V3:
+            raise ConfigError(
+                f"--tts-speaker {self.tts_speaker!r} is not a bulbul:v3 voice. "
+                f"Speakers are lowercase and model-specific; valid: {sorted(TTS_SPEAKERS_V3)}"
+            )
+        if self.target_lang not in TTS_LANGUAGES:
+            raise ConfigError(
+                f"target-lang {self.target_lang!r} cannot be synthesised by {self.tts_model}. "
+                f"Supported: {sorted(TTS_LANGUAGES)}"
+            )
+        if self.tts_sample_rate not in TTS_SAMPLE_RATES:
+            raise ConfigError(
+                f"--tts-sample-rate {self.tts_sample_rate} is not one of "
+                f"{sorted(TTS_SAMPLE_RATES)}"
+            )
+        if not 0 < self.fit_ratio_min < 1 < self.fit_ratio_max:
+            raise ConfigError(
+                f"the fit band must straddle 1.0, got "
+                f"[{self.fit_ratio_min}, {self.fit_ratio_max}]"
+            )
+        if self.fit_max_attempts < 1:
+            raise ConfigError("--fit-max-attempts must be >= 1")
+        if not TTS_API_PACE_MIN <= self.pace_min < self.pace_max <= TTS_API_PACE_MAX:
+            raise ConfigError(
+                f"the pace clamp [{self.pace_min}, {self.pace_max}] must sit inside the "
+                f"API's documented range [{TTS_API_PACE_MIN}, {TTS_API_PACE_MAX}] and be "
+                f"ordered. The tighter default is deliberate: see SPEC.md."
+            )
+        if self.trim_threshold_db >= 0:
+            raise ConfigError(
+                f"--trim-threshold-db is dBFS and must be negative, got {self.trim_threshold_db}"
+            )
 
     def __repr__(self) -> str:  # pragma: no cover - trivial
         """Repr with the API key redacted, so configs are safe to log."""
@@ -367,6 +463,14 @@ def load_config(
     translate_batch_segments: int = TRANSLATE_MAX_BATCH_SEGMENTS,
     translate_context_segments: int = TRANSLATE_CONTEXT_SEGMENTS,
     translate_no_batch: bool = False,
+    tts_speaker: str = TTS_SPEAKER,
+    tts_sample_rate: int = TTS_SAMPLE_RATE,
+    fit_ratio_min: float = FIT_RATIO_MIN,
+    fit_ratio_max: float = FIT_RATIO_MAX,
+    fit_max_attempts: int = FIT_MAX_ATTEMPTS,
+    pace_min: float = TTS_PERCEPTUAL_PACE_MIN,
+    pace_max: float = TTS_PERCEPTUAL_PACE_MAX,
+    trim_threshold_db: float = TTS_TRIM_THRESHOLD_DB,
 ) -> Config:
     """Load .env, merge it with CLI arguments, and return a validated Config."""
     load_dotenv(dotenv_path=env_file, override=False)
@@ -400,6 +504,14 @@ def load_config(
         translate_batch_segments=translate_batch_segments,
         translate_context_segments=translate_context_segments,
         translate_no_batch=translate_no_batch,
+        tts_speaker=tts_speaker,
+        tts_sample_rate=tts_sample_rate,
+        fit_ratio_min=fit_ratio_min,
+        fit_ratio_max=fit_ratio_max,
+        fit_max_attempts=fit_max_attempts,
+        pace_min=pace_min,
+        pace_max=pace_max,
+        trim_threshold_db=trim_threshold_db,
     )
     logger.debug("Loaded %r (key %s)", cfg, cfg.key_fingerprint)
     return cfg

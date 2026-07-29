@@ -242,6 +242,115 @@ syllable ratio of the five variants (1.53 mean vs 1.30 for `modern-colloquial`).
 
 ---
 
+## Text-to-Speech — `POST /text-to-speech`
+
+`Content-Type: application/json`. Confirmed 2026-07-29 against
+`https://docs.sarvam.ai/api-reference/text-to-speech/convert.md`, the bulbul model page,
+and real calls (`scripts/m4_probe.py`, raw observations in `output/m4_pace_probe.json`).
+
+### Request fields
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `text` | string | **required**. Max **2500 chars** (bulbul:v3), 1500 (v2) |
+| `target_language_code` | enum | **required**. 11 languages, same set as mayura:v1 |
+| `model` | enum | `bulbul:v3` or `bulbul:v2` |
+| `speaker` | enum | 37 v3 voices, **lowercase and model-specific**. Default `shubh` (v3) |
+| `pace` | number | default 1.0. **v3: 0.5–2.0**; v2: 0.3–3.0 |
+| `temperature` | number | 0.01–2.0, default 0.6. **v3 only** |
+| `pitch` / `loudness` | number | **v2 only — not supported on v3** |
+| `enable_preprocessing` | boolean | **v2 only** |
+| `speech_sample_rate` | enum | 8000/16000/22050/24000/32000/44100/48000. Default 24000 (v3) |
+| `output_audio_codec` | enum | mp3, linear16, mulaw, alaw, opus, flac, aac, **wav** (default) |
+
+### Response fields — observed
+
+```json
+{
+  "request_id": "20260729_0a0c0965-2125-46c4-a1b0-c6a911bbc1b8",
+  "audios": ["<base64 WAV, 294452 chars>"]
+}
+```
+
+`audios` is an **array**, even for a single input. Decoded bytes are a real RIFF/WAVE
+container: header `RIFF`…`WAVE`, **24000 Hz, 1 channel, 16-bit PCM** — so the stdlib
+`wave` module reads it directly and no duration ever has to be taken on trust.
+
+The response reports **no duration**, which settles the question anyway: the only
+available duration is the one measured from the frames.
+
+### `pace` semantics — measured, not assumed
+
+SPEC.md requires confirming the direction before the fit loop depends on it. Same Hindi
+sentence, six paces, duration measured from the returned frames after trimming:
+
+| pace | untrimmed | trimmed | lead pad | trail pad | pace × duration |
+| --- | --- | --- | --- | --- | --- |
+| 0.50 | 4.600 s | 4.600 s | 0.000 | 0.000 | 2.300 |
+| 0.85 | 2.483 s | 2.350 s | 0.010 | 0.123 | 1.998 |
+| 1.00 | 1.963 s | 1.940 s | 0.020 | 0.003 | 1.940 |
+| 1.25 | 1.368 s | 1.368 s | 0.000 | 0.000 | 1.710 |
+| 1.50 | 1.313 s | 1.313 s | 0.000 | 0.000 | 1.969 |
+| 2.00 | 1.146 s | 1.146 s | 0.000 | 0.000 | 2.293 |
+
+**Confirmed: a higher `pace` produces SHORTER audio — higher means faster.** So the fit
+loop's `pace *= actual/target` has the correct sign and does not need inverting. Had it
+been reversed, the update would have driven every segment away from its target.
+
+### `pace` is NOT inversely proportional to duration — and it saturates
+
+`pace × duration` would be constant if the relationship were proportional. It is not
+(1.71–2.30). Local elasticity `d(log duration)/d(log pace)`, where −1.0 would mean one
+correction step lands exactly on target:
+
+| step | elasticity |
+| --- | --- |
+| 0.50 → 0.85 | −1.266 |
+| 0.85 → 1.00 | −1.180 |
+| **1.00 → 1.25** | **−1.567** |
+| 1.25 → 1.50 | **−0.225** |
+| 1.50 → 2.00 | −0.471 |
+
+Two consequences:
+
+1. **Inside the perceptual clamp the response is steeper than proportional (≈ −1.2 to
+   −1.57), so `pace *= ratio` systematically overshoots.** It still converges — the
+   overshoot is a contraction, not a divergence — but it oscillates rather than
+   approaching from one side, which is why a 3-attempt ceiling matters.
+2. **Above pace 1.25 the response nearly collapses** (−0.23). This is an independent
+   argument for SPEC.md's 0.85–1.25 clamp: past 1.25 the extra range buys almost no
+   duration, so the clamp gives up far less than its width suggests.
+
+Measured on one sentence. The *sign* is a property of the API and generalises; the
+elasticity magnitudes are one sample.
+
+### Padding is small but big enough to matter
+
+Leading/trailing silence ranged 0.000–0.133 s across the sweep, and did not vary
+systematically with pace. On the 0.85 clip that pad was **5.7% of the clip — larger than
+the ±5% convergence band**, so an untrimmed measurement can flip a segment's verdict on
+its own. Trimming before measuring is therefore not cosmetic. The trimmed offsets are kept
+per segment because M5 has to add the lead pad back when placing the clip.
+
+### Measured on the real clip: pace is unreliable for small slow-downs
+
+Across the four test-clip segments, moving from pace 1.0 to 0.85 (a request for ~18%
+*longer* audio) produced:
+
+| segment | 1.00 | 0.85 | change |
+| --- | --- | --- | --- |
+| 0 | 1.770 s | 1.680 s | **−5.1% (wrong direction)** |
+| 1 | 3.390 s | 3.540 s | +4.4% |
+| 2 | 7.110 s | 7.123 s | +0.2% |
+| 3 | 1.560 s | 2.120 s | +35.9% |
+
+The sweep above shows pace works in aggregate, but per utterance the slow-down response is
+erratic and can invert. **The stage therefore ships the attempt closest to target rather
+than the last attempt** — otherwise segment 0 would have shipped the worse clip. Anything
+built on "lower pace always lengthens this specific line" would be unsound.
+
+---
+
 ## Pricing (INR)
 
 From `https://docs.sarvam.ai/api/getting-started/pricing.md`, confirmed 2026-07-28.
@@ -320,10 +429,6 @@ documented default, would both be worse than saying which threshold actually ran
 These will be filled in at the milestone that needs them, following the same rule:
 fetch the docs, make one real call, record what came back.
 
-- **Bulbul v3 TTS** (M4): endpoint path, speaker identifiers, the ~2500-char cap, output
-  audio format/sample rate, and above all **the semantics of `pace`** — whether a value
-  above 1.0 means faster or slower speech. The duration-fit update rule must be inverted
-  if the sense is reversed, so this gets a dedicated real-call check.
 - **Batch Speech-to-Text** (only if M6 shows timing is the bottleneck): job submission,
   polling, timestamp granularity, and whether its per-second price differs from the sync
   endpoint.

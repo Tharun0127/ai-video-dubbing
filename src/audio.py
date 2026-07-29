@@ -20,7 +20,9 @@ Output: measured durations, silence spans, and 16 kHz mono WAV files.
 
 from __future__ import annotations
 
+import array
 import contextlib
+import io
 import json
 import logging
 import math
@@ -343,3 +345,204 @@ def frames_to_seconds(frames: int, frame_rate: int) -> float:
 def db_to_amplitude(db: float) -> float:
     """Convert a dBFS value to a linear amplitude ratio (0.0-1.0 for dBFS <= 0)."""
     return math.pow(10.0, db / 20.0)
+
+
+def amplitude_to_db(amplitude: float) -> float:
+    """Convert a linear amplitude ratio to dBFS; silence maps to -inf."""
+    if amplitude <= 0.0:
+        return float("-inf")
+    return 20.0 * math.log10(amplitude)
+
+
+# --------------------------------------------------------------------------------------
+# In-memory WAV handling (M4: the TTS endpoint returns base64 WAV, never a file)
+# --------------------------------------------------------------------------------------
+
+#: Sample-value ranges by width, used to normalise a peak to dBFS.
+_FULL_SCALE = {1: 128.0, 2: 32768.0, 4: 2147483648.0}
+_ARRAY_TYPECODE = {1: "b", 2: "h", 4: "i"}
+
+
+@dataclass(frozen=True)
+class WavInfo:
+    """Measured parameters of an in-memory PCM WAV."""
+
+    channels: int
+    sample_width: int
+    frame_rate: int
+    frames: int
+
+    @property
+    def duration_s(self) -> float:
+        """Duration in seconds, computed from the frame count -- never from a reported field."""
+        return self.frames / float(self.frame_rate) if self.frame_rate else 0.0
+
+
+@dataclass(frozen=True)
+class TrimmedAudio:
+    """A WAV with leading/trailing silence removed, plus what was removed.
+
+    `lead_trim_s` is what M5 must add back when placing this segment: the synthesiser's
+    leading pad was part of the original timing, and dropping it silently shifts the
+    segment earlier by that much.
+    """
+
+    data: bytes
+    duration_s: float
+    original_duration_s: float
+    lead_trim_s: float
+    trail_trim_s: float
+    peak_dbfs: float
+    #: True when no sample anywhere exceeded the threshold, so nothing was trimmed.
+    all_silent: bool = False
+
+    def to_dict(self) -> dict[str, float | bool]:
+        """Serialise for the per-segment TTS record."""
+        return {
+            "duration_s": round(self.duration_s, 6),
+            "untrimmed_duration_s": round(self.original_duration_s, 6),
+            "lead_trim_s": round(self.lead_trim_s, 6),
+            "trail_trim_s": round(self.trail_trim_s, 6),
+            "peak_dbfs": round(self.peak_dbfs, 3) if math.isfinite(self.peak_dbfs) else None,
+            "all_silent": self.all_silent,
+        }
+
+
+def read_wav_bytes(data: bytes) -> tuple[WavInfo, bytes]:
+    """Parse an in-memory WAV; returns its measured parameters and the raw PCM frames."""
+    if not data:
+        raise AudioError("empty audio payload: the API returned no bytes")
+    try:
+        with wave.open(io.BytesIO(data), "rb") as handle:
+            info = WavInfo(
+                channels=handle.getnchannels(),
+                sample_width=handle.getsampwidth(),
+                frame_rate=handle.getframerate(),
+                frames=handle.getnframes(),
+            )
+            frames = handle.readframes(info.frames)
+    except (wave.Error, EOFError) as exc:
+        raise AudioError(
+            f"audio payload is not a readable PCM WAV ({len(data)} bytes, "
+            f"starts with {data[:4]!r}): {exc}"
+        ) from exc
+
+    if info.frame_rate <= 0:
+        raise AudioError(f"WAV reports a frame rate of {info.frame_rate}")
+    return info, frames
+
+
+def wav_bytes_duration_s(data: bytes) -> float:
+    """Measure a WAV's duration from its own frame count and frame rate."""
+    info, _ = read_wav_bytes(data)
+    return info.duration_s
+
+
+def write_wav_bytes(dest: str | Path, data: bytes) -> Path:
+    """Write WAV bytes to disk, creating parent directories; returns the path written."""
+    out = Path(dest)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_bytes(data)
+    return out
+
+
+def _frame_peaks(frames: bytes, info: WavInfo) -> array.array:
+    """Return the per-frame peak absolute sample value, collapsing channels."""
+    typecode = _ARRAY_TYPECODE.get(info.sample_width)
+    if typecode is None:
+        raise AudioError(
+            f"unsupported sample width {info.sample_width} bytes; expected 1, 2, or 4"
+        )
+    samples = array.array(typecode)
+    samples.frombytes(frames[:len(frames) - (len(frames) % info.sample_width)])
+
+    if info.channels == 1:
+        return array.array("d", (abs(s) for s in samples))
+
+    peaks = array.array("d")
+    step = info.channels
+    for index in range(0, len(samples) - step + 1, step):
+        peaks.append(max(abs(s) for s in samples[index:index + step]))
+    return peaks
+
+
+def trim_wav_silence(
+    data: bytes,
+    *,
+    threshold_db: float = -40.0,
+    window_ms: float = 10.0,
+    keep_margin_ms: float = 20.0,
+) -> TrimmedAudio:
+    """Strip leading and trailing silence from an in-memory WAV, keeping what was removed.
+
+    Why this exists: a synthesiser pads its output with a little silence at each end, and
+    that padding does not scale with the pace parameter. Measuring an untrimmed clip
+    therefore mixes a fixed offset into a quantity the duration-fit loop assumes is
+    proportional to pace, which biases every correction it computes. Trimming first makes
+    the measured duration a clean function of pace.
+
+    `keep_margin_ms` of the removed silence is given back at each end so the attack of a
+    plosive is never clipped.
+    """
+    info, frames = read_wav_bytes(data)
+    if info.frames == 0:
+        raise AudioError("audio payload contains zero frames")
+
+    peaks = _frame_peaks(frames, info)
+    full_scale = _FULL_SCALE.get(info.sample_width, 32768.0)
+    peak_dbfs = amplitude_to_db((max(peaks) if peaks else 0.0) / full_scale)
+
+    threshold = db_to_amplitude(threshold_db) * full_scale
+    window = max(1, int(info.frame_rate * window_ms / 1000.0))
+
+    first_loud: int | None = None
+    last_loud: int | None = None
+    for start in range(0, len(peaks), window):
+        if max(peaks[start:start + window], default=0.0) >= threshold:
+            if first_loud is None:
+                first_loud = start
+            last_loud = min(len(peaks), start + window)
+
+    original_duration = info.duration_s
+
+    if first_loud is None or last_loud is None:
+        # Nothing above the threshold anywhere. Trimming would delete the segment, so
+        # return it untouched and let the caller decide -- silently emitting zero frames
+        # here would show up much later as a hole in the dubbed timeline.
+        logger.warning(
+            "TTS audio never exceeded %.1f dBFS (peak %.1f dBFS, %.3fs); leaving it untrimmed",
+            threshold_db, peak_dbfs, original_duration,
+        )
+        return TrimmedAudio(
+            data=data, duration_s=original_duration, original_duration_s=original_duration,
+            lead_trim_s=0.0, trail_trim_s=0.0, peak_dbfs=peak_dbfs, all_silent=True,
+        )
+
+    margin = max(0, int(info.frame_rate * keep_margin_ms / 1000.0))
+    start_frame = max(0, first_loud - margin)
+    end_frame = min(info.frames, last_loud + margin)
+
+    width = info.sample_width * info.channels
+    trimmed_frames = frames[start_frame * width:end_frame * width]
+
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as writer:
+        writer.setnchannels(info.channels)
+        writer.setsampwidth(info.sample_width)
+        writer.setframerate(info.frame_rate)
+        writer.writeframes(trimmed_frames)
+
+    trimmed = TrimmedAudio(
+        data=buffer.getvalue(),
+        duration_s=(end_frame - start_frame) / float(info.frame_rate),
+        original_duration_s=original_duration,
+        lead_trim_s=start_frame / float(info.frame_rate),
+        trail_trim_s=(info.frames - end_frame) / float(info.frame_rate),
+        peak_dbfs=peak_dbfs,
+    )
+    logger.debug(
+        "trimmed %.3fs -> %.3fs (lead %.3fs, trail %.3fs, peak %.1f dBFS)",
+        original_duration, trimmed.duration_s, trimmed.lead_trim_s,
+        trimmed.trail_trim_s, peak_dbfs,
+    )
+    return trimmed

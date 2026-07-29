@@ -86,21 +86,67 @@ class ApiCall:
 
 @dataclass
 class SegmentFit:
-    """Duration-fit outcome for a single TTS segment (populated in M4)."""
+    """Duration-fit outcome for a single TTS segment.
+
+    Carries both the fitted result and the pace=1.0 baseline, because the headline number
+    this project produces is the *paired* before/after drift over the same segments. The
+    baseline is attempt 1 of the fit loop itself, never a second synthesis run, so the
+    comparison costs nothing extra and is measured on identical text.
+    """
 
     segment_id: int
     target_duration_s: float
     achieved_duration_s: float
+    #: Duration measured at pace=1.0, i.e. attempt 1. This is the unfitted baseline.
+    baseline_duration_s: float
     final_pace: float
     attempts: int
     clamped: bool
+    converged: bool
 
     @property
     def abs_drift_pct(self) -> float:
         """Absolute drift of achieved vs target duration, as a percentage of target."""
+        return _abs_drift_pct(self.achieved_duration_s, self.target_duration_s)
+
+    @property
+    def baseline_abs_drift_pct(self) -> float:
+        """Absolute drift the unfitted pace=1.0 audio would have had, same segment."""
+        return _abs_drift_pct(self.baseline_duration_s, self.target_duration_s)
+
+    @property
+    def signed_drift_pct(self) -> float:
+        """Signed drift: positive means the dub overruns its window."""
         if self.target_duration_s <= 0:
             return 0.0
-        return abs(self.achieved_duration_s - self.target_duration_s) / self.target_duration_s * 100.0
+        return (self.achieved_duration_s - self.target_duration_s) / self.target_duration_s * 100.0
+
+    @property
+    def overrun_pct(self) -> float:
+        """Drift in the only direction that breaks sync: how far the dub overruns.
+
+        An underrun is absorbed by padding the gap with silence (SPEC.md), so it costs
+        nothing in sync terms. An overrun has to spill into the next segment's window or
+        be accepted as drift. Reporting both this and the symmetric absolute drift keeps
+        the distinction visible instead of averaging the two failure modes together.
+        """
+        if self.target_duration_s <= 0:
+            return 0.0
+        return max(0.0, self.achieved_duration_s - self.target_duration_s) / self.target_duration_s * 100.0
+
+    @property
+    def baseline_overrun_pct(self) -> float:
+        """Overrun the unfitted pace=1.0 audio would have had, same segment."""
+        if self.target_duration_s <= 0:
+            return 0.0
+        return max(0.0, self.baseline_duration_s - self.target_duration_s) / self.target_duration_s * 100.0
+
+
+def _abs_drift_pct(achieved: float, target: float) -> float:
+    """Absolute difference between achieved and target duration, as a percentage of target."""
+    if target <= 0:
+        return 0.0
+    return abs(achieved - target) / target * 100.0
 
 
 # --------------------------------------------------------------------------------------
@@ -125,6 +171,17 @@ def percentile(values: list[float], pct: float) -> float:
 def _mean(values: list[float]) -> float:
     """Arithmetic mean of a non-empty list."""
     return sum(values) / len(values)
+
+
+def _drift_block(drifts: list[float]) -> dict[str, Any]:
+    """Summarise one column of absolute drift percentages."""
+    return {
+        "mean_abs_drift_pct": round(_mean(drifts), 4),
+        "p50_abs_drift_pct": round(percentile(drifts, 50), 4),
+        "p95_abs_drift_pct": round(percentile(drifts, 95), 4),
+        "max_abs_drift_pct": round(max(drifts), 4),
+        "segments_over_5pct": sum(1 for d in drifts if d > 5.0),
+    }
 
 
 # --------------------------------------------------------------------------------------
@@ -223,31 +280,90 @@ class MetricsCollector:
         return counts
 
     def duration_fit_stats(self) -> dict[str, Any]:
-        """Drift statistics over recorded segment fits, or NOT_MEASURED if none exist."""
+        """Paired before/after drift statistics over recorded segment fits.
+
+        "Before" is each segment's own pace=1.0 attempt and "after" is its fitted result,
+        so the two columns cover exactly the same segments and the same text -- an
+        unpaired comparison across different runs would confound the fit loop with
+        whatever else changed.
+        """
         enabled = self.duration_fit_enabled
+        empty = {
+            "mean_abs_drift_pct": NOT_MEASURED,
+            "p50_abs_drift_pct": NOT_MEASURED,
+            "p95_abs_drift_pct": NOT_MEASURED,
+            "max_abs_drift_pct": NOT_MEASURED,
+            "segments_over_5pct": NOT_MEASURED,
+        }
         if not self.segment_fits:
             return {
                 "enabled": enabled if enabled is not None else NOT_MEASURED,
-                "mean_abs_drift_pct": NOT_MEASURED,
-                "p50_abs_drift_pct": NOT_MEASURED,
-                "p95_abs_drift_pct": NOT_MEASURED,
-                "segments_over_5pct": NOT_MEASURED,
+                "n_segments": NOT_MEASURED,
+                "without_fit": dict(empty),
+                "with_fit": dict(empty),
+                "improvement": NOT_MEASURED,
+                **empty,
                 "mean_attempts": NOT_MEASURED,
                 "mean_final_pace": NOT_MEASURED,
                 "clamped_segments": NOT_MEASURED,
+                "clamped_pct": NOT_MEASURED,
+                "converged_segments": NOT_MEASURED,
             }
 
-        drifts = [f.abs_drift_pct for f in self.segment_fits]
-        return {
+        fits = self.segment_fits
+        count = len(fits)
+        before = [f.baseline_abs_drift_pct for f in fits]
+        after = [f.abs_drift_pct for f in fits]
+
+        stats = {
             "enabled": enabled if enabled is not None else NOT_MEASURED,
-            "mean_abs_drift_pct": round(_mean(drifts), 4),
-            "p50_abs_drift_pct": round(percentile(drifts, 50), 4),
-            "p95_abs_drift_pct": round(percentile(drifts, 95), 4),
-            "segments_over_5pct": sum(1 for d in drifts if d > 5.0),
-            "mean_attempts": round(_mean([float(f.attempts) for f in self.segment_fits]), 4),
-            "mean_final_pace": round(_mean([f.final_pace for f in self.segment_fits]), 4),
-            "clamped_segments": sum(1 for f in self.segment_fits if f.clamped),
+            "n_segments": count,
+            # A four-segment sample cannot support a meaningful p95; it is reported
+            # because SPEC.md asks for it, and flagged so nobody quotes it as robust.
+            "small_sample": count < 20,
+            "without_fit": _drift_block(before),
+            "with_fit": _drift_block(after),
+            "overrun_only": {
+                "note": (
+                    "Underruns are absorbed by silence padding in M5 and cost nothing in "
+                    "sync terms; only overruns have to spill or drift. These are the same "
+                    "segments, counting overrun alone."
+                ),
+                "without_fit_mean_pct": round(
+                    _mean([f.baseline_overrun_pct for f in fits]), 4),
+                "with_fit_mean_pct": round(_mean([f.overrun_pct for f in fits]), 4),
+                "without_fit_segments_overrunning": sum(
+                    1 for f in fits if f.baseline_overrun_pct > 0),
+                "with_fit_segments_overrunning": sum(1 for f in fits if f.overrun_pct > 0),
+            },
+            "direction": {
+                "segments_underrunning": sum(1 for f in fits if f.signed_drift_pct < 0),
+                "segments_overrunning": sum(1 for f in fits if f.signed_drift_pct > 0),
+                "mean_signed_drift_pct": round(
+                    _mean([f.signed_drift_pct for f in fits]), 4),
+            },
+            "improvement": {
+                "mean_abs_drift_pct_delta": round(_mean(after) - _mean(before), 4),
+                "mean_abs_drift_pct_reduction": (
+                    round((1 - _mean(after) / _mean(before)) * 100.0, 2)
+                    if _mean(before) > 0 else NOT_MEASURED
+                ),
+                "segments_improved": sum(1 for f in fits
+                                         if f.abs_drift_pct < f.baseline_abs_drift_pct),
+                "segments_worsened": sum(1 for f in fits
+                                         if f.abs_drift_pct > f.baseline_abs_drift_pct),
+            },
+            "mean_attempts": round(_mean([float(f.attempts) for f in fits]), 4),
+            "mean_final_pace": round(_mean([f.final_pace for f in fits]), 4),
+            "clamped_segments": sum(1 for f in fits if f.clamped),
+            "clamped_pct": round(sum(1 for f in fits if f.clamped) / count * 100.0, 2),
+            "converged_segments": sum(1 for f in fits if f.converged),
+            "converged_pct": round(sum(1 for f in fits if f.converged) / count * 100.0, 2),
         }
+        # SPEC.md's flat field names, kept so the documented metrics.json schema still
+        # resolves; they always describe the WITH-fit column.
+        stats.update(_drift_block(after))
+        return stats
 
     # --- output -----------------------------------------------------------------------
 

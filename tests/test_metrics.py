@@ -86,10 +86,27 @@ def test_percentile_rejects_empty_input() -> None:
 
 
 def test_segment_fit_drift_percentage() -> None:
-    """Drift is |achieved - target| as a percentage of target."""
+    """Drift is |achieved - target| as a percentage of target, for both columns."""
     fit = SegmentFit(segment_id=1, target_duration_s=2.0, achieved_duration_s=2.2,
-                     final_pace=1.1, attempts=2, clamped=False)
+                     baseline_duration_s=2.6, final_pace=1.1, attempts=2,
+                     clamped=False, converged=False)
     assert fit.abs_drift_pct == pytest.approx(10.0)
+    assert fit.baseline_abs_drift_pct == pytest.approx(30.0)
+    assert fit.signed_drift_pct == pytest.approx(10.0)
+
+
+def test_segment_fit_distinguishes_overrun_from_underrun() -> None:
+    """An underrun is padded with silence in M5; only an overrun threatens sync."""
+    over = SegmentFit(segment_id=1, target_duration_s=2.0, achieved_duration_s=2.2,
+                      baseline_duration_s=2.2, final_pace=1.0, attempts=1,
+                      clamped=False, converged=False)
+    under = SegmentFit(segment_id=2, target_duration_s=2.0, achieved_duration_s=1.0,
+                       baseline_duration_s=1.0, final_pace=1.0, attempts=1,
+                       clamped=False, converged=False)
+    assert over.overrun_pct == pytest.approx(10.0)
+    assert under.overrun_pct == 0.0
+    assert under.abs_drift_pct == pytest.approx(50.0)
+    assert under.signed_drift_pct == pytest.approx(-50.0)
 
 
 # --- collector ------------------------------------------------------------------------
@@ -141,16 +158,23 @@ def test_realtime_factor_is_computed_from_measured_duration(metrics: MetricsColl
 def test_duration_fit_stats_from_recorded_segments(metrics: MetricsCollector) -> None:
     """Drift statistics are derived from recorded fits, including the >5% count."""
     metrics.duration_fit_enabled = True
-    metrics.record_segment_fit(SegmentFit(1, 2.0, 2.0, 1.0, 1, False))   # 0% drift
-    metrics.record_segment_fit(SegmentFit(2, 2.0, 2.2, 1.1, 2, False))   # 10% drift
-    metrics.record_segment_fit(SegmentFit(3, 2.0, 2.02, 1.0, 1, True))   # 1% drift
+    # (id, target, achieved, baseline, pace, attempts, clamped, converged)
+    metrics.record_segment_fit(SegmentFit(1, 2.0, 2.0, 2.4, 1.2, 2, False, True))   # 0% drift
+    metrics.record_segment_fit(SegmentFit(2, 2.0, 2.2, 2.6, 1.1, 2, False, False))  # 10% drift
+    metrics.record_segment_fit(SegmentFit(3, 2.0, 2.02, 3.0, 1.0, 1, True, True))   # 1% drift
 
     stats = metrics.duration_fit_stats()
     assert stats["enabled"] is True
+    assert stats["n_segments"] == 3
     assert stats["segments_over_5pct"] == 1
     assert stats["clamped_segments"] == 1
-    # duration_fit_stats rounds to 4 decimal places for readable metrics.json output.
+    assert stats["converged_segments"] == 2
+    # The flat SPEC.md field names always describe the WITH-fit column.
     assert stats["mean_abs_drift_pct"] == pytest.approx((0 + 10 + 1) / 3, abs=1e-4)
+    assert stats["with_fit"]["mean_abs_drift_pct"] == stats["mean_abs_drift_pct"]
+    # Baselines are 20%, 30% and 50% out, so fitting is a clear improvement.
+    assert stats["without_fit"]["mean_abs_drift_pct"] == pytest.approx(100 / 3, abs=1e-4)
+    assert stats["improvement"]["segments_improved"] == 3
 
 
 def test_calls_by_stage_counts_only_network_calls(metrics: MetricsCollector) -> None:

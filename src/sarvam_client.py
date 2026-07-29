@@ -29,6 +29,8 @@ Output: parsed API response dicts, with every call recorded in metrics.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import logging
 import random
@@ -51,9 +53,23 @@ from .config import (
     TRANSLATE_NUMERALS_FORMATS,
     TRANSLATE_OUTPUT_SCRIPTS,
     TRANSLATE_SPEAKER_GENDERS,
+    TTS_API_PACE_MAX,
+    TTS_API_PACE_MIN,
+    TTS_LANGUAGES,
+    TTS_MAX_CHARS,
+    TTS_MODELS,
+    TTS_OUTPUT_CODEC,
+    TTS_SAMPLE_RATES,
+    TTS_SPEAKERS_V3,
     Config,
 )
-from .metrics import ApiCall, MetricsCollector, cost_stt_inr, cost_translate_inr
+from .metrics import (
+    ApiCall,
+    MetricsCollector,
+    cost_stt_inr,
+    cost_translate_inr,
+    cost_tts_inr,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -276,6 +292,108 @@ class SarvamClient:
             len(text), len(payload.get("translated_text", "")),
         )
         return payload
+
+    def text_to_speech(
+        self,
+        text: str,
+        *,
+        target_language_code: str,
+        model: str | None = None,
+        speaker: str | None = None,
+        pace: float = 1.0,
+        speech_sample_rate: int | None = None,
+        output_audio_codec: str | None = None,
+        stage: str = "tts",
+    ) -> dict[str, Any]:
+        """Synthesise one text via POST /text-to-speech; returns the parsed response dict.
+
+        `pace` is part of the cache key, so each attempt of the duration-fit loop is a
+        distinct entry and re-running the whole loop costs nothing.
+        """
+        resolved_model = model or self.config.tts_model
+        if resolved_model not in TTS_MODELS:
+            raise SarvamAPIError(f"model {resolved_model!r} is not one of {sorted(TTS_MODELS)}")
+        if not text.strip():
+            raise SarvamAPIError("refusing to synthesise empty text; it would bill for nothing")
+        if len(text) > TTS_MAX_CHARS:
+            raise SarvamAPIError(
+                f"input is {len(text)} chars but {resolved_model} caps at {TTS_MAX_CHARS} "
+                f"(HTTP 422 beyond it). Split the segment first."
+            )
+        if target_language_code not in TTS_LANGUAGES:
+            raise SarvamAPIError(
+                f"target_language_code {target_language_code!r} is not supported by "
+                f"{resolved_model}; it speaks {sorted(TTS_LANGUAGES)}"
+            )
+
+        resolved_speaker = speaker or self.config.tts_speaker
+        if resolved_model == "bulbul:v3" and resolved_speaker not in TTS_SPEAKERS_V3:
+            raise SarvamAPIError(
+                f"speaker {resolved_speaker!r} is not a bulbul:v3 voice (lowercase, "
+                f"model-specific): {sorted(TTS_SPEAKERS_V3)}"
+            )
+        if not TTS_API_PACE_MIN <= pace <= TTS_API_PACE_MAX:
+            raise SarvamAPIError(
+                f"pace {pace} is outside the API's documented range "
+                f"[{TTS_API_PACE_MIN}, {TTS_API_PACE_MAX}]"
+            )
+
+        rate = speech_sample_rate if speech_sample_rate is not None else self.config.tts_sample_rate
+        if rate not in TTS_SAMPLE_RATES:
+            raise SarvamAPIError(
+                f"speech_sample_rate {rate} is not one of {sorted(TTS_SAMPLE_RATES)}"
+            )
+
+        # Rounded so that float noise in the fit loop's pace update cannot produce two
+        # cache keys for what is audibly the same request.
+        quantised_pace = round(float(pace), 4)
+
+        params: dict[str, Any] = {
+            "model": resolved_model,
+            "target_language_code": target_language_code,
+            "speaker": resolved_speaker,
+            "pace": quantised_pace,
+            "speech_sample_rate": rate,
+            "output_audio_codec": output_audio_codec or TTS_OUTPUT_CODEC,
+        }
+
+        def do_request() -> tuple[dict[str, Any], int, bytes | None]:
+            """Perform the JSON POST; returns (payload, status, binary=None)."""
+            body = {k: v for k, v in params.items() if v is not None}
+            body["text"] = text
+            response = self._request("POST", "/text-to-speech", json=body)
+            return response.json(), response.status_code, None
+
+        payload, was_cached = self._cached_call(
+            stage=stage,
+            endpoint="/text-to-speech",
+            model=resolved_model,
+            params=params,
+            input_hash=hash_text(text),
+            billable_units=float(len(text)),
+            billable_unit_name="input_characters",
+            list_price_inr=cost_tts_inr(len(text)),
+            do_request=do_request,
+        )
+        logger.info(
+            "tts %s pace=%.4f (%s, %d chars)",
+            target_language_code, quantised_pace,
+            "CACHE HIT" if was_cached else "network call", len(text),
+        )
+        return payload
+
+    @staticmethod
+    def audio_bytes(payload: dict[str, Any]) -> bytes:
+        """Decode the first entry of a /text-to-speech response's base64 `audios` array."""
+        audios = payload.get("audios")
+        if not isinstance(audios, list) or not audios:
+            raise SarvamAPIError(
+                f"/text-to-speech response has no audio: keys={sorted(payload)}"
+            )
+        try:
+            return base64.b64decode(audios[0], validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise SarvamAPIError(f"audios[0] is not valid base64: {exc}") from exc
 
     def close(self) -> None:
         """Close the underlying HTTP session."""
