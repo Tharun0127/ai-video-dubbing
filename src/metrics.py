@@ -401,6 +401,10 @@ class MetricsCollector:
                     "asr": stage_calls.get("asr", 0),
                     "translate": stage_calls.get("translate", 0),
                     "tts": stage_calls.get("tts", 0),
+                    # M6 back-transcription also hits /speech-to-text, but it is scoring the
+                    # dub rather than producing it, so it is counted separately instead of
+                    # being folded into the ASR total.
+                    "qc": stage_calls.get("qc", 0),
                 },
                 "cache_hits": self.cache_hits,
                 "cache_misses": self.cache_misses,

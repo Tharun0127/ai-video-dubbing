@@ -184,7 +184,9 @@ def test_calls_by_stage_counts_only_network_calls(metrics: MetricsCollector) -> 
     metrics.record_api_call(make_call(stage="tts", cache_hit=False))
 
     assert metrics.calls_by_stage() == {"asr": 1, "tts": 1}
-    assert metrics.to_dict()["api"]["calls"] == {"asr": 1, "translate": 0, "tts": 1}
+    assert metrics.to_dict()["api"]["calls"] == {
+        "asr": 1, "translate": 0, "tts": 1, "qc": 0,
+    }
 
 
 def test_write_produces_valid_json(metrics: MetricsCollector, tmp_path: Path) -> None:

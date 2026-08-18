@@ -15,7 +15,6 @@ from src.config import STAGE_ORDER, Config
 from src.metrics import MetricsCollector
 from src.pipeline import (
     EXIT_ERROR,
-    EXIT_NOT_IMPLEMENTED,
     StageNotImplementedError,
     build_arg_parser,
     main,
@@ -78,10 +77,25 @@ def test_stages_to_run_honours_single_stage(config: Config) -> None:
     assert stages_to_run(single) == ("asr",)
 
 
-def test_unimplemented_stage_names_its_milestone(config: Config) -> None:
-    """A stage that has not been built says which milestone delivers it (TTS landed in M4)."""
-    with pytest.raises(StageNotImplementedError, match="M5"):
-        run_stage("assemble", config, client=None, metrics=MetricsCollector())  # type: ignore[arg-type]
+def test_every_built_stage_is_dispatched(config: Config) -> None:
+    """Six of the seven stages are wired as of M5; each must fail with its own error.
+
+    The stages still fail here, because none of their inputs exist in a bare temp
+    directory -- but each must fail with its *own* error, which is what proves it is
+    registered rather than unimplemented.
+    """
+    for stage in [s for s in STAGE_ORDER if s != "qc"]:
+        with pytest.raises(Exception) as caught:  # noqa: PT011 - each stage raises its own type
+            run_stage(stage, config, client=None, metrics=MetricsCollector())  # type: ignore[arg-type]
+        assert not isinstance(caught.value, StageNotImplementedError), (
+            f"stage {stage!r} is in STAGE_ORDER but has no implementation registered"
+        )
+
+
+def test_the_qc_stage_names_the_milestone_that_delivers_it(config: Config) -> None:
+    """QC is the last stage still to come, and says so rather than failing opaquely."""
+    with pytest.raises(StageNotImplementedError, match="M6"):
+        run_stage("qc", config, client=None, metrics=MetricsCollector())  # type: ignore[arg-type]
 
 
 # --- run loop ----------------------------------------------------------------------------
@@ -91,7 +105,9 @@ def test_run_writes_metrics_even_when_a_stage_fails(config: Config, tiny_wav: Pa
     cfg = Config(**{**config.__dict__, "input_path": tiny_wav, "stage": "assemble"})
     metrics = MetricsCollector()
 
-    assert run(cfg, metrics) == EXIT_NOT_IMPLEMENTED
+    # assemble fails because M4 never ran in this temp directory, so there is no
+    # tts_report.json to place clips from.
+    assert run(cfg, metrics) == EXIT_ERROR
     metrics_path = cfg.output_dir / "metrics.json"
     assert metrics_path.exists()
 

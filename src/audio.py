@@ -546,3 +546,152 @@ def trim_wav_silence(
         trimmed.trail_trim_s, peak_dbfs,
     )
     return trimmed
+
+
+# --------------------------------------------------------------------------------------
+# Timeline assembly (M5: place synthesised clips on one silent track)
+# --------------------------------------------------------------------------------------
+
+#: 16-bit PCM sample bounds. Mixing two clips that overlap can exceed these, and a wrapped
+#: sample is an audible crack, so mixing clamps and counts instead of letting it wrap.
+INT16_MIN = -32768
+INT16_MAX = 32767
+
+
+def silent_int16(frames: int, channels: int = 1) -> array.array:
+    """Allocate `frames` of digital silence as an int16 sample array."""
+    if frames < 0:
+        raise AudioError(f"frame count must be >= 0, got {frames}")
+    if channels < 1:
+        raise AudioError(f"channel count must be >= 1, got {channels}")
+    return array.array("h", bytes(frames * channels * 2))
+
+
+def int16_from_wav_bytes(data: bytes) -> tuple[WavInfo, array.array]:
+    """Parse an in-memory 16-bit PCM WAV into its parameters and an int16 sample array."""
+    info, frames = read_wav_bytes(data)
+    if info.sample_width != 2:
+        raise AudioError(
+            f"timeline assembly handles 16-bit PCM only, got {info.sample_width * 8}-bit. "
+            f"Re-synthesise at 16-bit or convert before assembling."
+        )
+    samples = array.array("h")
+    samples.frombytes(frames[:len(frames) - (len(frames) % 2)])
+    return info, samples
+
+
+def read_wav_int16(path: str | Path) -> tuple[WavInfo, array.array]:
+    """Read a 16-bit PCM WAV from disk into its parameters and an int16 sample array."""
+    media = Path(path)
+    if not media.exists():
+        raise AudioError(f"audio file does not exist: {media}")
+    return int16_from_wav_bytes(media.read_bytes())
+
+
+def apply_fade_int16(
+    samples: array.array,
+    *,
+    channels: int,
+    frame_rate: int,
+    fade_ms: float,
+) -> int:
+    """Apply a linear fade in and out in place; returns the fade length actually used, in frames.
+
+    A synthesised clip starts and ends at a non-zero sample, and dropping that onto a silent
+    track puts a step discontinuity at each boundary -- an audible click. A short linear ramp
+    removes it. The ramp is capped at half the clip so a very short segment still fades
+    symmetrically instead of fading in past its own midpoint.
+    """
+    if fade_ms < 0:
+        raise AudioError(f"fade_ms must be >= 0, got {fade_ms}")
+    if channels < 1 or frame_rate <= 0:
+        raise AudioError(f"invalid clip format: {channels} ch at {frame_rate} Hz")
+
+    total_frames = len(samples) // channels
+    fade_frames = min(int(frame_rate * fade_ms / 1000.0), total_frames // 2)
+    if fade_frames <= 0:
+        return 0
+
+    for frame in range(fade_frames):
+        gain_in = frame / fade_frames
+        gain_out = gain_in
+        head = frame * channels
+        tail = (total_frames - 1 - frame) * channels
+        for channel in range(channels):
+            samples[head + channel] = int(samples[head + channel] * gain_in)
+            samples[tail + channel] = int(samples[tail + channel] * gain_out)
+    return fade_frames
+
+
+def mix_int16(
+    canvas: array.array,
+    clip: array.array,
+    *,
+    offset_frames: int,
+    channels: int = 1,
+) -> dict[str, int]:
+    """Add `clip` into `canvas` at `offset_frames`, clamping; returns what was written and clipped.
+
+    Additive rather than overwriting: where two segments overlap, overwriting would delete
+    the tail of the earlier line outright, while summing keeps both audible so the overlap
+    is something a listener (and the QC report) can actually detect.
+    """
+    if offset_frames < 0:
+        raise AudioError(f"offset must be >= 0 frames, got {offset_frames}")
+    if channels < 1:
+        raise AudioError(f"channel count must be >= 1, got {channels}")
+
+    start = offset_frames * channels
+    available = len(canvas) - start
+    if available <= 0:
+        return {"written": 0, "truncated": len(clip) // channels, "clipped": 0, "overlapped": 0}
+
+    writable = min(len(clip), available)
+    clipped = 0
+    overlapped = 0
+
+    for index in range(writable):
+        position = start + index
+        existing = canvas[position]
+        if existing:
+            overlapped += 1
+        total = existing + clip[index]
+        if total > INT16_MAX:
+            total = INT16_MAX
+            clipped += 1
+        elif total < INT16_MIN:
+            total = INT16_MIN
+            clipped += 1
+        canvas[position] = total
+
+    return {
+        "written": writable // channels,
+        "truncated": (len(clip) - writable) // channels,
+        "clipped": clipped,
+        "overlapped": overlapped // channels,
+    }
+
+
+def write_int16_wav(
+    dest: str | Path,
+    samples: array.array,
+    *,
+    channels: int,
+    frame_rate: int,
+) -> Path:
+    """Write an int16 sample array to a PCM WAV; returns the path written."""
+    out = Path(dest)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(out), "wb") as writer:
+        writer.setnchannels(channels)
+        writer.setsampwidth(2)
+        writer.setframerate(frame_rate)
+        writer.writeframes(samples.tobytes())
+    return out
+
+
+def seconds_to_frames(seconds: float, frame_rate: int) -> int:
+    """Convert seconds to a frame index, rounding to the nearest sample (never truncating)."""
+    if frame_rate <= 0:
+        raise AudioError(f"frame_rate must be positive, got {frame_rate}")
+    return max(0, round(seconds * frame_rate))

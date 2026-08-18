@@ -225,6 +225,45 @@ TTS_TRIM_THRESHOLD_DB = -40.0
 TTS_TRIM_WINDOW_MS = 10.0
 TTS_TRIM_KEEP_MARGIN_MS = 20.0
 
+# --------------------------------------------------------------------------------------
+# M5 assemble + mux defaults (see src/stages/assemble.py and src/stages/mux.py)
+# --------------------------------------------------------------------------------------
+
+#: Linear fade applied to each end of every placed clip. SPEC.md asks for 10-20 ms; 15 ms
+#: is the midpoint. Its only job is to remove the step discontinuity -- and therefore the
+#: click -- where a clip meets the silent track.
+ASSEMBLE_FADE_MS = 15.0
+
+#: Filename the assembled continuous dub always gets, so `--stage mux` and `--stage qc`
+#: can find it without re-running the earlier stages.
+DUBBED_AUDIO_NAME = "dubbed_audio.wav"
+
+#: Audio encoder for the remux. The video stream is copied (`-c:v copy`) and never
+#: re-encoded, but PCM cannot go into an MP4, so the new audio track is encoded to AAC.
+MUX_AUDIO_CODEC = "aac"
+MUX_AUDIO_BITRATE = "192k"
+
+#: Tolerance between the source's duration and the muxed output's, in seconds. Container
+#: rounding and AAC's encoder priming account for a few tens of milliseconds; more than
+#: this means a stream was truncated.
+MUX_DURATION_TOLERANCE_S = 0.25
+
+# --------------------------------------------------------------------------------------
+# M6 QC defaults (see src/qc.py)
+# --------------------------------------------------------------------------------------
+
+#: SPEC.md's timing threshold: segments drifting more than this are counted and flagged.
+QC_DRIFT_THRESHOLD_PCT = 5.0
+
+#: How many worst segments the QC report ranks by default.
+QC_FLAG_TOP_N = 5
+
+#: Weights combining the two independent failure modes into one ranking score. Semantic
+#: error (WER) and timing error (absolute drift, expressed as a fraction) are not on the
+#: same scale, so the weights are stated here rather than buried in the ranking code.
+QC_WER_WEIGHT = 1.0
+QC_DRIFT_WEIGHT = 1.0
+
 
 class ConfigError(RuntimeError):
     """Raised when configuration is missing or invalid; never swallowed silently."""
@@ -290,6 +329,14 @@ class Config:
     pace_min: float = TTS_PERCEPTUAL_PACE_MIN
     pace_max: float = TTS_PERCEPTUAL_PACE_MAX
     trim_threshold_db: float = TTS_TRIM_THRESHOLD_DB
+
+    # --- assemble + mux (M5) ---------------------------------------------------------
+    fade_ms: float = ASSEMBLE_FADE_MS
+    audio_bitrate: str = MUX_AUDIO_BITRATE
+
+    # --- QC (M6) ----------------------------------------------------------------------
+    qc_drift_threshold_pct: float = QC_DRIFT_THRESHOLD_PCT
+    qc_flag_top_n: int = QC_FLAG_TOP_N
 
     #: Populated in __post_init__; kept out of __repr__ so the key is never printed.
     _redacted: bool = field(default=True, repr=False)
@@ -421,6 +468,14 @@ class Config:
             raise ConfigError(
                 f"--trim-threshold-db is dBFS and must be negative, got {self.trim_threshold_db}"
             )
+        if self.fade_ms < 0:
+            raise ConfigError(f"--fade-ms must be >= 0, got {self.fade_ms}")
+        if self.qc_drift_threshold_pct <= 0:
+            raise ConfigError(
+                f"--qc-drift-threshold-pct must be > 0, got {self.qc_drift_threshold_pct}"
+            )
+        if self.qc_flag_top_n < 1:
+            raise ConfigError(f"--qc-flag-top-n must be >= 1, got {self.qc_flag_top_n}")
 
     def __repr__(self) -> str:  # pragma: no cover - trivial
         """Repr with the API key redacted, so configs are safe to log."""
@@ -471,6 +526,10 @@ def load_config(
     pace_min: float = TTS_PERCEPTUAL_PACE_MIN,
     pace_max: float = TTS_PERCEPTUAL_PACE_MAX,
     trim_threshold_db: float = TTS_TRIM_THRESHOLD_DB,
+    fade_ms: float = ASSEMBLE_FADE_MS,
+    audio_bitrate: str = MUX_AUDIO_BITRATE,
+    qc_drift_threshold_pct: float = QC_DRIFT_THRESHOLD_PCT,
+    qc_flag_top_n: int = QC_FLAG_TOP_N,
 ) -> Config:
     """Load .env, merge it with CLI arguments, and return a validated Config."""
     load_dotenv(dotenv_path=env_file, override=False)
@@ -512,6 +571,10 @@ def load_config(
         pace_min=pace_min,
         pace_max=pace_max,
         trim_threshold_db=trim_threshold_db,
+        fade_ms=fade_ms,
+        audio_bitrate=audio_bitrate,
+        qc_drift_threshold_pct=qc_drift_threshold_pct,
+        qc_flag_top_n=qc_flag_top_n,
     )
     logger.debug("Loaded %r (key %s)", cfg, cfg.key_fingerprint)
     return cfg

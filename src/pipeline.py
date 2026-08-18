@@ -28,6 +28,10 @@ from typing import Sequence
 from .cache import CacheMissError, DiskCache
 from .config import (
     ASR_MODES,
+    ASSEMBLE_FADE_MS,
+    MUX_AUDIO_BITRATE,
+    QC_DRIFT_THRESHOLD_PCT,
+    QC_FLAG_TOP_N,
     MAX_CHUNK_S,
     MAX_SEGMENT_S,
     MIN_SEGMENT_S,
@@ -161,6 +165,21 @@ def build_arg_parser() -> argparse.ArgumentParser:
     synthesis.add_argument("--trim-threshold-db", type=float, default=TTS_TRIM_THRESHOLD_DB,
                            help="dBFS below which TTS output is treated as silence and "
                                 "trimmed before its duration is measured.")
+
+    assembly = parser.add_argument_group("assemble and mux (M5)")
+    assembly.add_argument("--fade-ms", type=float, default=ASSEMBLE_FADE_MS,
+                          help="Linear fade applied to each end of every placed clip, "
+                               "to remove the click where it meets the silent track.")
+    assembly.add_argument("--audio-bitrate", default=MUX_AUDIO_BITRATE,
+                          help="Bitrate for the AAC audio track in the muxed output. "
+                               "The video stream is always copied, never re-encoded.")
+
+    quality = parser.add_argument_group("QC (M6)")
+    quality.add_argument("--qc-drift-threshold-pct", type=float, default=QC_DRIFT_THRESHOLD_PCT,
+                         help="Absolute duration drift above which a segment is counted "
+                              "and flagged in the QC report.")
+    quality.add_argument("--qc-flag-top-n", type=int, default=QC_FLAG_TOP_N,
+                         help="How many worst segments qc_report.md details in full.")
     return parser
 
 
@@ -211,11 +230,26 @@ def run_stage(
         state["tts"] = run_tts(config, client, metrics)
         return
 
+    if name == "assemble":
+        from .stages.assemble import run_assemble
+
+        # Reads output/tts_report.json, so `--stage assemble` resumes from disk.
+        state["assemble"] = run_assemble(config)
+        return
+
+    if name == "mux":
+        from .stages.mux import run_mux
+
+        # Reads output/dubbed_audio.wav, so `--stage mux` resumes from disk.
+        state["mux"] = run_mux(config)
+        return
+
     milestone = STAGE_MILESTONE.get(name, "a later milestone")
     raise StageNotImplementedError(
         f"stage {name!r} is not implemented yet -- it arrives in {milestone}. "
-        f"Milestones 1-4 deliver config, cache, metrics, the Sarvam client, this CLI, "
-        f"demux, chunked ASR, per-segment translation, and TTS with duration fitting."
+        f"Milestones 1-5 deliver config, cache, metrics, the Sarvam client, this CLI, "
+        f"demux, chunked ASR, per-segment translation, TTS with duration fitting, "
+        f"timeline assembly, and the remux."
     )
 
 
@@ -310,6 +344,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             pace_min=args.pace_min,
             pace_max=args.pace_max,
             trim_threshold_db=args.trim_threshold_db,
+            fade_ms=args.fade_ms,
+            audio_bitrate=args.audio_bitrate,
+            qc_drift_threshold_pct=args.qc_drift_threshold_pct,
+            qc_flag_top_n=args.qc_flag_top_n,
         )
     except ConfigError as exc:
         logger.error("configuration error: %s", exc)
