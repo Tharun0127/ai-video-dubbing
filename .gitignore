@@ -10,6 +10,7 @@ venv/
 # Generated artifacts
 cache/
 output/
+coldrun/
 *.log
 
 # Media: large intermediates are regenerated, but the committed test clips in
