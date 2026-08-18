@@ -96,6 +96,35 @@ QC report measures and prints that count rather than arguing it away.
 place → remux → re-transcribe. That is the strongest single piece of evidence that the
 timeline arithmetic is correct.
 
+### Second sample: `samples/jfk_10s_16k_mono.wav` (committed, so you can reproduce it)
+
+`samples/test_clip.mp4` above is **not committed** (it is a third-party clip kept out of the
+repo for licence reasons), so the numbers you can reproduce from a clean clone come from the
+10-second public-domain JFK extract that *is* committed:
+
+```bash
+python -m src.pipeline --input samples/jfk_10s_16k_mono.wav --output output/jfk_dubbed.m4a
+```
+
+| Metric | Measured |
+| --- | --- |
+| Wall clock (cold) | 10.316 s for 10.0 s of audio — realtime factor 1.032× |
+| Cost (cold) | ₹0.9167 over 5 network calls |
+| WER / CER | **0.0556 / 0.0761** — 1 substitution in 18 words |
+| The one substitution | `Solomon` → `सोलोमन`, i.e. the script mismatch again |
+| Duration drift | 28.3% → **15.6%** with fitting (a 44.9% reduction, n=1) |
+| Window fill | 84% — this clip is mostly speech, so the fit loop has real work to do |
+
+This is the better demonstration of the duration-fit loop: because a 10-second clip of
+continuous oratory has almost no pause padding, the window is a genuine target and the loop
+halves the drift. It is a single segment, so it is an illustration, not a statistic.
+
+It also exposes a limitation the card-trick clip hid — see limitation 9 below: Saaras
+transcribed JFK's "the same solemn oath our forebears prescribed" as "the same Solomon are
+forebears prescribed", the pipeline faithfully translated and dubbed that error, and
+**the QC harness scored it 0.0556 because it compares the dub against the translation, not
+against the source.**
+
 ---
 
 ## The core engineering problem: translated speech is a different length
@@ -195,7 +224,7 @@ python -m venv .venv
 # source .venv/bin/activate && pip install -r requirements.txt  # macOS/Linux
 
 cp .env.example .env        # then put your bare key in it: SARVAM_API_KEY=sk_xxx
-python -m pytest            # 335 tests, no network access required
+python -m pytest            # 339 tests, no network access required
 ```
 
 Dub a clip end to end:
@@ -273,6 +302,22 @@ non-goals. Every line is spoken by `shubh`.
 clamping and reported; nothing re-times them. On this clip 0 overlaps occurred, so the
 mixing path is covered by unit tests rather than by a real run.
 
+**9. QC cannot see ASR errors, by construction.** The harness scores the dub against the
+*translation*, so it measures synthesis and assembly fidelity — not whether the transcript
+was right in the first place. The JFK run proves the gap: Saaras heard "the same solemn oath
+our forebears prescribed" as "the same Solomon are forebears prescribed", the pipeline
+faithfully dubbed that, and QC returned a near-perfect 0.0556 WER. Catching it needs a
+second reference — either a human transcript, or back-translating the dub to the source
+language and scoring against the *source* text. That is the single most valuable next
+addition to the harness.
+
+**10. Stage outputs are not namespaced per input.** All stages read and write fixed
+filenames under `output/`, so two different inputs share one working directory. The demux
+stage now records `demux_provenance.json` and re-extracts when the WAV came from a different
+input — a guard added after this bug was caught in practice (see the commit after M7) — but
+running `--stage tts` directly against a stale `segments.json` from another input would
+still produce nonsense. A per-input output directory is the proper fix.
+
 ---
 
 ## How it is built
@@ -287,7 +332,7 @@ src/
   qc.py              back-transcription, WER/CER, coverage assertions, ranked findings
   pipeline.py        orchestration + CLI; always writes metrics.json, even on failure
   stages/            demux · asr · translate · tts · assemble · mux
-tests/               335 tests, no sockets; real ffmpeg only on tiny generated fixtures
+tests/               339 tests, no sockets; real ffmpeg only on tiny generated fixtures
 scripts/             milestone acceptance checks and API probes
 docs/                api-notes.md (confirmed API shapes) + one results file per milestone
 ```
@@ -304,7 +349,7 @@ docs/                api-notes.md (confirmed API shapes) + one results file per 
 
 ### Testing
 
-335 tests, none of which open a socket. The Sarvam API is replaced by fixtures captured from
+339 tests, none of which open a socket. The Sarvam API is replaced by fixtures captured from
 real responses (which double as API documentation). Real `ffmpeg` runs only against tiny
 generated fixtures — a 1-second clip for the mux tests, because the claim that `-c:v copy`
 leaves the picture untouched can only be demonstrated by a real remux.
@@ -317,7 +362,7 @@ python -m pytest tests/test_tts.py -q     # the duration-fit loop in isolation
 ### Verified from a clean clone
 
 `git clone` into an empty directory, fresh virtualenv, `pip install -r requirements.txt`,
-`python -m pytest` — 335 passed, with no `.env` and no network access. The API key is only
+`python -m pytest` — 339 passed in 11.3 s on Python 3.14.6, with no `.env` and no network access. The API key is only
 needed to run the pipeline itself, never to run the tests.
 
 ---

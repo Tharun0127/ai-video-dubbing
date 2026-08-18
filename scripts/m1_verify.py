@@ -24,7 +24,6 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
 from src.audio import probe_duration_s  # noqa: E402
 from src.cache import CacheMissError, DiskCache, cache_key, hash_file  # noqa: E402
 from src.config import load_config, setup_logging  # noqa: E402

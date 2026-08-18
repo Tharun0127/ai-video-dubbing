@@ -10,6 +10,7 @@ downmix it performs on samples/test_clip.mp4.
 
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
@@ -23,7 +24,7 @@ from src.audio import (
     write_wav_slice,
 )
 from src.config import Config
-from src.stages.demux import DEMUXED_WAV_NAME, run_demux
+from src.stages.demux import DEMUXED_WAV_NAME, PROVENANCE_NAME, run_demux
 
 ffmpeg_required = pytest.mark.skipif(
     subprocess.run(["ffmpeg", "-version"], capture_output=True, check=False).returncode != 0,
@@ -99,6 +100,78 @@ def test_run_demux_reports_both_formats(tone_clip_mp4: Path, config: Config,
     assert result.extracted.channels == 1
     assert result.wav_path.name == DEMUXED_WAV_NAME
     assert result.wav_path.exists()
+
+
+@ffmpeg_required
+def test_the_wav_is_reused_when_the_input_is_unchanged(tone_clip_mp4: Path, config: Config,
+                                                       tmp_path: Path) -> None:
+    """Reuse is what makes `--stage asr` instant, so an unchanged input must not re-extract."""
+    cfg = Config(**{**config.__dict__, "input_path": tone_clip_mp4,
+                    "output_dir": tmp_path / "out"})
+    first = run_demux(cfg)
+    stamped = first.wav_path.stat().st_mtime_ns
+
+    run_demux(cfg)
+
+    assert first.wav_path.stat().st_mtime_ns == stamped
+    assert (cfg.output_dir / PROVENANCE_NAME).exists()
+
+
+@ffmpeg_required
+def test_a_wav_from_a_different_input_is_never_reused(tone_clip_mp4: Path, tiny_wav: Path,
+                                                      config: Config, tmp_path: Path) -> None:
+    """The bug this guards: every later stage keys off the WAV, not the video.
+
+    Reusing another input's audio made the whole pipeline dub the wrong source entirely
+    from cache and report success -- only the M6 post-mux duration check noticed.
+    """
+    out = tmp_path / "out"
+    run_demux(Config(**{**config.__dict__, "input_path": tone_clip_mp4, "output_dir": out}))
+
+    second = run_demux(Config(**{**config.__dict__, "input_path": tiny_wav, "output_dir": out}))
+
+    # tiny_wav is 0.5s; the tone clip is 3s. The reused file would have been the tone clip.
+    assert second.extracted.duration_s == pytest.approx(0.5, abs=0.05)
+    recorded = json.loads((out / PROVENANCE_NAME).read_text(encoding="utf-8"))
+    assert recorded["source_path"] == str(tiny_wav.resolve())
+
+
+@ffmpeg_required
+def test_a_wav_with_no_provenance_is_re_extracted(tone_clip_mp4: Path, config: Config,
+                                                  tmp_path: Path) -> None:
+    """A WAV of unknown origin -- left by an older version -- is not trusted."""
+    cfg = Config(**{**config.__dict__, "input_path": tone_clip_mp4,
+                    "output_dir": tmp_path / "out"})
+    result = run_demux(cfg)
+    (cfg.output_dir / PROVENANCE_NAME).unlink()
+    result.wav_path.write_bytes(b"not audio at all")
+
+    reextracted = run_demux(cfg)
+
+    assert reextracted.extracted.duration_s == pytest.approx(CLIP_DURATION_S, abs=0.1)
+
+
+@ffmpeg_required
+def test_an_input_edited_in_place_is_detected(tone_clip_mp4: Path, config: Config,
+                                              tmp_path: Path) -> None:
+    """Provenance records size and duration too, so the same path with new content re-extracts."""
+    cfg = Config(**{**config.__dict__, "input_path": tone_clip_mp4,
+                    "output_dir": tmp_path / "out"})
+    run_demux(cfg)
+
+    subprocess.run(
+        [
+            "ffmpeg", "-v", "error", "-nostdin", "-y",
+            "-f", "lavfi", "-i", "testsrc=size=320x240:rate=10:duration=1.5",
+            "-f", "lavfi", "-i", "sine=frequency=440:duration=1.5",
+            "-c:v", "mpeg4", "-c:a", "aac", "-ar", "44100", "-ac", "2",
+            "-shortest", str(tone_clip_mp4),
+        ],
+        check=True, capture_output=True,
+    )
+    result = run_demux(cfg)
+
+    assert result.extracted.duration_s == pytest.approx(1.5, abs=0.1)
 
 
 def test_extraction_of_a_missing_file_raises(tmp_path: Path) -> None:

@@ -9,12 +9,19 @@ The video stream is deliberately left alone -- M5 remuxes the *original* stream 
 Both the source and the extracted file are probed and logged, so the conversion that
 actually happened is on the record rather than assumed.
 
+The extracted WAV is reused across runs to keep `--stage asr` instant, but only after
+`demux_provenance.json` confirms it came from *this* input. That check is not paranoia:
+every downstream stage keys off the WAV rather than the video, so reusing another input's
+audio makes the whole pipeline dub the wrong source entirely from cache and report success.
+
 Input:  config.input_path (any container ffmpeg can read).
-Output: output/audio_16k_mono.wav + a DemuxResult carrying both probes.
+Output: output/audio_16k_mono.wav, output/demux_provenance.json, and a DemuxResult
+        carrying both probes.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -33,6 +40,10 @@ logger = logging.getLogger(__name__)
 
 #: Filename the demuxed audio always gets, so a later --stage asr run can find it.
 DEMUXED_WAV_NAME = "audio_16k_mono.wav"
+
+#: Sidecar recording which input produced the WAV above. Without it, a second run on a
+#: DIFFERENT input would silently reuse the previous input's audio -- see `_is_stale`.
+PROVENANCE_NAME = "demux_provenance.json"
 
 
 @dataclass(frozen=True)
@@ -81,6 +92,51 @@ class DemuxResult:
         }
 
 
+def _provenance(source_path: Path, source: StreamInfo) -> dict[str, Any]:
+    """Describe the input that a demuxed WAV was extracted from.
+
+    Path, byte size, and measured duration together: the path alone would not notice a
+    file edited in place, and the size alone would not notice two different clips that
+    happen to be the same length.
+    """
+    return {
+        "source_path": str(Path(source_path).resolve()),
+        "source_size_bytes": Path(source_path).stat().st_size,
+        "source_duration_s": round(source.duration_s, 6),
+    }
+
+
+def _stale_reason(
+    wav_path: Path,
+    provenance_path: Path,
+    expected: dict[str, Any],
+) -> str | None:
+    """Return why an existing demuxed WAV cannot be reused, or None if it can be."""
+    if not wav_path.exists():
+        return None  # nothing to reuse; the caller extracts anyway
+    if not provenance_path.exists():
+        return f"{provenance_path.name} is missing, so its origin is unknown"
+
+    try:
+        recorded = json.loads(provenance_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        return f"{provenance_path.name} is unreadable ({exc})"
+
+    for field in ("source_path", "source_size_bytes"):
+        if recorded.get(field) != expected[field]:
+            return f"{field} was {recorded.get(field)!r}, now {expected[field]!r}"
+
+    recorded_duration = recorded.get("source_duration_s")
+    if (
+        not isinstance(recorded_duration, (int, float))
+        or abs(float(recorded_duration) - expected["source_duration_s"]) > 0.01
+    ):
+        return (
+            f"source_duration_s was {recorded_duration}, now {expected['source_duration_s']}"
+        )
+    return None
+
+
 def run_demux(config: Config, *, force: bool = False) -> DemuxResult:
     """Extract config.input_path's audio to 16 kHz mono PCM WAV and report both formats."""
     if config.input_path is None:
@@ -92,15 +148,33 @@ def run_demux(config: Config, *, force: bool = False) -> DemuxResult:
         raise AudioError(f"{config.input_path} has no decodable audio stream to dub")
 
     wav_path = config.output_dir / DEMUXED_WAV_NAME
+    provenance_path = config.output_dir / PROVENANCE_NAME
+    provenance = _provenance(config.input_path, source)
 
     # Re-extracting is cheap and deterministic, but skipping it makes `--stage asr`
     # runs instant. The output is byte-identical either way, so the cache is unaffected.
-    if wav_path.exists() and not force:
+    #
+    # Reuse is only safe when the existing WAV came from THIS input. Skipping that check
+    # let a run on a new input silently inherit the previous input's audio, and because
+    # every downstream stage keys off the WAV rather than the video, the whole pipeline
+    # then dubbed the wrong source from cache and reported success. Only the M6 post-mux
+    # duration check caught it.
+    stale_reason = _stale_reason(wav_path, provenance_path, provenance)
+    if wav_path.exists() and not force and stale_reason is None:
         logger.info("demux: reusing existing %s (delete it to force re-extraction)", wav_path)
         extracted = StreamInfo.from_probe(probe_stream_info(wav_path))
     else:
+        if wav_path.exists() and stale_reason is not None:
+            logger.warning(
+                "demux: re-extracting because %s does not belong to this input (%s)",
+                wav_path.name, stale_reason,
+            )
         extracted = StreamInfo.from_probe(
             extract_audio_16k_mono(config.input_path, wav_path, sample_rate=TARGET_SAMPLE_RATE)
+        )
+        provenance_path.parent.mkdir(parents=True, exist_ok=True)
+        provenance_path.write_text(
+            json.dumps(provenance, indent=2, ensure_ascii=False), encoding="utf-8",
         )
 
     logger.info("demux: source    %s", source.describe())
