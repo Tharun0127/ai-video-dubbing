@@ -424,14 +424,67 @@ documented default, would both be worse than saying which threshold actually ran
 
 ---
 
+## Bulbul v3 is NOT duration-deterministic — measured 2026-08-18
+
+The single most consequential API property found in this project, and it is not documented
+anywhere on docs.sarvam.ai.
+
+**The same request returns audio of a different length each time.** Three calls,
+byte-identical request body (same 83-char text, `pace=1.0`, `bulbul:v3`, speaker `shubh`,
+24 kHz), each with a fresh cache so every call really hit the network
+(`scripts/tts_variance_probe.py`, raw data in `output/tts_variance_probe.json`):
+
+| call | raw duration | trimmed duration | response bytes |
+| --- | --- | --- | --- |
+| 1 | 6.656 s | 6.580 s | 319,532 |
+| 2 | 5.376 s | 5.260 s | 258,092 |
+| 3 | 6.571 s | 6.540 s | 315,436 |
+
+**Spread 1.320 s = 21.55% of the mean; σ = 0.751 s; responses not byte-identical.**
+
+How it was found: the M7 cold-cache run and the warm-cache run reported different
+per-segment drift. Transcripts and translations were compared first and were byte-identical
+between the runs, which left the synthesiser as the only variable — hence the probe.
+
+Three consequences for anything built on this API:
+
+1. **21.55% variance is more than 4× the ±5% duration-fit convergence band.** A pace
+   computed from one measurement cannot be assumed to hold on the next call, so caching a
+   pace per phrase and reusing it later would be unsound.
+2. **Measure-then-ship is required; measure-then-re-request is not safe.** This pipeline
+   places the exact WAV it measured, so the drift it reports is the drift of the audio that
+   actually ships.
+3. **Duration statistics over a handful of segments carry this variance.** The M4 drift
+   improvement on a 4-segment clip is inside the noise, and is reported that way.
+
+---
+
+## Speech-to-Text for QC back-transcription — confirmed 2026-08-18
+
+The same `POST /speech-to-text` endpoint, called with `language_code` set to the **target**
+language (`hi-IN`) and `mode: transcribe`, on slices of the pipeline's own dubbed output.
+No new endpoint or parameter; the only change is which language is declared.
+
+- 4 calls over 36.107 s of synthesised Hindi returned clean Devanagari transcripts.
+- Cost ₹0.3167 total, billed per second of audio exactly as for source-language ASR.
+- Cached under `stage="qc"`, so QC calls are a separate namespace from M2's ASR calls and
+  are counted separately in `metrics.json` (`api.calls.qc`).
+- **Saaras transcribes English loanwords in Devanagari** (`card` → `कार्ड`,
+  `shuffle` → `शफल`), while `mayura:v1` emits them in Latin script. Any WER computed
+  between the two is inflated by that mismatch; measured at 8 of 42 reference words on the
+  test clip. See `docs/m6-results.md` §4.
+
+---
+
 ## Not yet confirmed (do before implementing)
 
 These will be filled in at the milestone that needs them, following the same rule:
 fetch the docs, make one real call, record what came back.
 
-- **Batch Speech-to-Text** (only if M6 shows timing is the bottleneck): job submission,
-  polling, timestamp granularity, and whether its per-second price differs from the sync
-  endpoint.
+- **Batch Speech-to-Text**: job submission, polling, timestamp granularity, and whether its
+  per-second price differs from the sync endpoint. M6 confirmed timing *is* the weak point,
+  but the cause is segment windows including pauses (see `docs/m5-results.md` §5), not
+  timestamp granularity — so this is still not the next thing to build.
 
 ## Open questions for the project owner
 

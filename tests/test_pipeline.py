@@ -77,14 +77,14 @@ def test_stages_to_run_honours_single_stage(config: Config) -> None:
     assert stages_to_run(single) == ("asr",)
 
 
-def test_every_built_stage_is_dispatched(config: Config) -> None:
-    """Six of the seven stages are wired as of M5; each must fail with its own error.
+def test_every_stage_in_spec_order_is_dispatched(config: Config) -> None:
+    """All seven stages are wired as of M6; none may fall through to the not-built path.
 
     The stages still fail here, because none of their inputs exist in a bare temp
     directory -- but each must fail with its *own* error, which is what proves it is
     registered rather than unimplemented.
     """
-    for stage in [s for s in STAGE_ORDER if s != "qc"]:
+    for stage in STAGE_ORDER:
         with pytest.raises(Exception) as caught:  # noqa: PT011 - each stage raises its own type
             run_stage(stage, config, client=None, metrics=MetricsCollector())  # type: ignore[arg-type]
         assert not isinstance(caught.value, StageNotImplementedError), (
@@ -92,10 +92,10 @@ def test_every_built_stage_is_dispatched(config: Config) -> None:
         )
 
 
-def test_the_qc_stage_names_the_milestone_that_delivers_it(config: Config) -> None:
-    """QC is the last stage still to come, and says so rather than failing opaquely."""
-    with pytest.raises(StageNotImplementedError, match="M6"):
-        run_stage("qc", config, client=None, metrics=MetricsCollector())  # type: ignore[arg-type]
+def test_an_unknown_stage_is_reported_as_a_wiring_bug(config: Config) -> None:
+    """A stage name with no dispatch branch is a bug in this module, and says so."""
+    with pytest.raises(StageNotImplementedError, match="wiring bug"):
+        run_stage("not-a-stage", config, client=None, metrics=MetricsCollector())  # type: ignore[arg-type]
 
 
 # --- run loop ----------------------------------------------------------------------------

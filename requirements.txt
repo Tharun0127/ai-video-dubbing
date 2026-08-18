@@ -1,4 +1,5 @@
 requests==2.34.2
 python-dotenv==1.2.2
 ffmpeg-python==0.2.0
+jiwer==4.0.0
 pytest==8.4.2

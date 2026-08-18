@@ -244,12 +244,17 @@ def run_stage(
         state["mux"] = run_mux(config)
         return
 
+    if name == "qc":
+        from .qc import run_qc
+
+        # Reads every earlier stage's report, so `--stage qc` scores an existing dub.
+        state["qc"] = run_qc(config, client, metrics)
+        return
+
     milestone = STAGE_MILESTONE.get(name, "a later milestone")
     raise StageNotImplementedError(
-        f"stage {name!r} is not implemented yet -- it arrives in {milestone}. "
-        f"Milestones 1-5 deliver config, cache, metrics, the Sarvam client, this CLI, "
-        f"demux, chunked ASR, per-segment translation, TTS with duration fitting, "
-        f"timeline assembly, and the remux."
+        f"stage {name!r} has no implementation registered (it belongs to {milestone}). "
+        f"Every stage in STAGE_ORDER should be dispatched above; this is a wiring bug."
     )
 
 
