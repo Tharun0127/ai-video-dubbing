@@ -25,3 +25,10 @@ samples/test_clip.mp4
 node_modules/
 .DS_Store
 
+
+# Agent / prompt scaffolding — local only, never published
+CLAUDE.md
+SPEC.md
+STARTER-CHECKLIST.md
+docs/interview-notes.md
+.claude/
