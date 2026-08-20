@@ -21,7 +21,7 @@ WHAT IS BEING SCORED, AND AGAINST WHAT
    show up in this number instead of passing unnoticed.
 
 2. **Timing fidelity.** Per-segment target vs achieved duration from M4, reported as
-   mean/p50/p95 and a count over the 5% threshold SPEC.md sets.
+   mean/p50/p95 and a count over the 5% threshold the project brief sets.
 
 3. **Coverage.** Segment counts at every hop -- ASR -> translate -> TTS -> assemble -> QC.
    An off-by-one here silently destroys sync, so the counts are asserted, not logged.
@@ -657,7 +657,7 @@ def _render_markdown(
     if timing.get("small_sample"):
         lines += [
             f"> **Small sample.** {len(scores)} segments cannot support a meaningful p95. "
-            f"It is reported because SPEC.md asks for it, not because it is robust.",
+            f"It is reported because the brief asks for it, not because it is robust.",
             "",
         ]
 

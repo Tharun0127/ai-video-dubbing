@@ -3,7 +3,7 @@ ASR stage: transcribe audio with Sarvam Saaras v3 under the 30-second REST cap.
 
 The synchronous /speech-to-text endpoint rejects audio longer than 30 s (HTTP 422), so a
 36 s clip cannot be sent in one call. This module implements the chunked-REST strategy
-from SPEC.md option (a):
+from the project brief, option (a):
 
     demuxed 16 kHz WAV
       -> detect silences (ffmpeg silencedetect, threshold tunable, default -40 dB)
@@ -122,7 +122,7 @@ class LocalSpan:
 
 @dataclass
 class Segment:
-    """One normalised output segment; `to_spec_dict` emits the SPEC.md contract exactly."""
+    """One normalised output segment; `to_spec_dict` emits the project-brief contract exactly."""
 
     id: int
     start: float
@@ -140,7 +140,7 @@ class Segment:
         return self.end - self.start
 
     def to_spec_dict(self) -> dict[str, Any]:
-        """The exact shape SPEC.md defines for segments.json."""
+        """The exact shape the project brief defines for segments.json."""
         return {
             "id": self.id,
             "start": round(self.start, 3),

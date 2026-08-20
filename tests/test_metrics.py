@@ -169,7 +169,7 @@ def test_duration_fit_stats_from_recorded_segments(metrics: MetricsCollector) ->
     assert stats["segments_over_5pct"] == 1
     assert stats["clamped_segments"] == 1
     assert stats["converged_segments"] == 2
-    # The flat SPEC.md field names always describe the WITH-fit column.
+    # The flat project-brief field names always describe the WITH-fit column.
     assert stats["mean_abs_drift_pct"] == pytest.approx((0 + 10 + 1) / 3, abs=1e-4)
     assert stats["with_fit"]["mean_abs_drift_pct"] == stats["mean_abs_drift_pct"]
     # Baselines are 20%, 30% and 50% out, so fitting is a clear improvement.

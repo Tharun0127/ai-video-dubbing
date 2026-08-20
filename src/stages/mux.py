@@ -10,7 +10,7 @@ loss, and a fraction of the wall clock a re-encode would cost. Only the audio is
 because PCM cannot live in an MP4; that is AAC at 192 kbit/s.
 
 v1 REPLACES the audio track entirely. Background music and effects in the source are lost
-with the original speech -- preserving them needs source separation (Demucs), which SPEC.md
+with the original speech -- preserving them needs source separation (Demucs), which the project brief
 lists as a deliberate non-goal for v1. This is stated in the report rather than left for a
 listener to discover.
 

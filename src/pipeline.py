@@ -80,7 +80,7 @@ class StageNotImplementedError(RuntimeError):
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
-    """Construct the CLI parser with every flag defined in SPEC.md."""
+    """Construct the CLI parser with every flag defined in the project brief."""
     parser = argparse.ArgumentParser(
         prog="python -m src.pipeline",
         description="Batch video dubbing pipeline built on Sarvam AI (English -> Hindi by default).",
@@ -158,10 +158,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
                            help="Upper edge of the achieved/target band counted as fitted.")
     synthesis.add_argument("--pace-min", type=float, default=TTS_PERCEPTUAL_PACE_MIN,
                            help="Slowest pace the loop may request. Deliberately tighter "
-                                "than the API's 0.5 (see SPEC.md).")
+                                "than the API's 0.5 (see the project brief).")
     synthesis.add_argument("--pace-max", type=float, default=TTS_PERCEPTUAL_PACE_MAX,
                            help="Fastest pace the loop may request. Deliberately tighter "
-                                "than the API's 2.0 (see SPEC.md).")
+                                "than the API's 2.0 (see the project brief).")
     synthesis.add_argument("--trim-threshold-db", type=float, default=TTS_TRIM_THRESHOLD_DB,
                            help="dBFS below which TTS output is treated as silence and "
                                 "trimmed before its duration is measured.")

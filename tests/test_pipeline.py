@@ -27,7 +27,7 @@ from src.pipeline import (
 # --- argument parsing -------------------------------------------------------------------
 
 def test_parser_accepts_every_spec_flag() -> None:
-    """Every flag SPEC.md defines is wired, including the credit-saving ones."""
+    """Every flag the project brief defines is wired, including the credit-saving ones."""
     args = build_arg_parser().parse_args([
         "--input", "clip.mp4", "--source-lang", "en-IN", "--target-lang", "hi-IN",
         "--output", "out/dubbed.mp4", "--no-fit", "--max-segments", "3",

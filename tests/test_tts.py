@@ -127,7 +127,7 @@ def test_clamp_pace(proposed: float, expected: float, clamped: bool) -> None:
 
 
 def test_clamp_is_tighter_than_the_api_range(config: Config) -> None:
-    """SPEC.md's central engineering call: never request the full API range."""
+    """the brief's central engineering call: never request the full API range."""
     assert config.pace_min > 0.5
     assert config.pace_max < 2.0
 

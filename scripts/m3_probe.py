@@ -1,7 +1,7 @@
 """
 M3 probe: confirm the /translate wire shape, then measure register and batching for real.
 
-CLAUDE.md forbids implementing against a guessed API, so this script does three things
+The project standards forbid implementing against a guessed API, so this script does three things
 against the live endpoint before the stage is trusted, and writes everything it observes
 to output/m3_register_probe.json:
 

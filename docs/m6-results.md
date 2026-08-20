@@ -22,7 +22,7 @@ Re-running it is a cache hit and costs ₹0.
 | Corpus CER | **0.2135** |
 | Segments scored | 4 of 4 |
 | Mean absolute timing drift | 60.81% |
-| p95 absolute timing drift | 78.52% (n=4 — not a robust p95, reported because SPEC.md asks) |
+| p95 absolute timing drift | 78.52% (n=4 — not a robust p95, reported because the brief asks) |
 | Segments over the 5% drift threshold | 4 of 4 |
 | Coverage | PASS at all 5 hops |
 | Segments flagged | 4 |

@@ -1,7 +1,7 @@
 """
 M4 probe: confirm the /text-to-speech wire shape and the SIGN of the `pace` parameter.
 
-SPEC.md is explicit that the duration-fit loop must not rely on an assumed pace direction.
+the brief is explicit that the duration-fit loop must not rely on an assumed pace direction.
 The whole loop is `pace *= actual/target`, which only converges if a HIGHER pace produces
 SHORTER audio. If the sense were reversed, that update would drive every segment away
 from its target instead of towards it, and the failure would look like "the model is bad

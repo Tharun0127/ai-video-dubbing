@@ -91,7 +91,7 @@ of the source *speech*; it is the duration of speech plus silence.
 Two consequences, both measured rather than argued:
 
 1. The fit loop is asked to stretch a 1.8 s line to fill 5.5 s, which is a 3× slow-down. It
-   clamps at 0.85 (correctly — SPEC.md's perceptual limit) and cannot get close. Every
+   clamps at 0.85 (correctly — the brief's perceptual limit) and cannot get close. Every
    segment ends up "clamped" and none "converged", which reads like a failing loop but is
    actually the loop refusing to produce unlistenable speech.
 2. Sync is nonetheless preserved, because each line still *starts* at the timestamp its

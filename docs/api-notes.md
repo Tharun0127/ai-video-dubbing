@@ -165,7 +165,7 @@ real calls (`scripts/m3_probe.py`, raw response saved in `output/m3_register_pro
 | `numerals_format` | enum | `international` (default) or `native` |
 
 There is **no context parameter and no batch/array parameter.** The request takes exactly
-one `input` string. Both were checked for explicitly because SPEC.md asks for context
+one `input` string. Both were checked for explicitly because the brief asks for context
 windows and batching; the consequence is that both have to be built on top of `input`
 (numbered lines), which is what `src/stages/translate.py` does.
 
@@ -227,9 +227,9 @@ model applies native numerals to the scaffolding as well as to the content. Pyth
 is Unicode-aware and `int("१") == 1`, so the parser handles it; this is recorded because
 it is exactly the kind of thing that silently breaks a hand-rolled `[0-9]` regex.
 
-### M3 decision — mayura:v1 / classic-colloquial, against SPEC.md's default
+### M3 decision — mayura:v1 / classic-colloquial, against the brief's default
 
-SPEC.md names Sarvam-Translate. The measured comparison in `docs/m3-results.md` overrides
+the brief names Sarvam-Translate. The measured comparison in `docs/m3-results.md` overrides
 that for this source: on conversational speech `sarvam-translate:v1` rendered "top card"
 as "सबसे अच्छा कार्ड" (*best* card — it destroys the trick's punchline) and "No way" as
 "कोई बात नहीं" (*never mind*). `mayura:v1` in `classic-colloquial` got both right and was
@@ -281,7 +281,7 @@ available duration is the one measured from the frames.
 
 ### `pace` semantics — measured, not assumed
 
-SPEC.md requires confirming the direction before the fit loop depends on it. Same Hindi
+the brief requires confirming the direction before the fit loop depends on it. Same Hindi
 sentence, six paces, duration measured from the returned frames after trimming:
 
 | pace | untrimmed | trimmed | lead pad | trail pad | pace × duration |
@@ -318,7 +318,7 @@ Two consequences:
    overshoot is a contraction, not a divergence — but it oscillates rather than
    approaching from one side, which is why a 3-attempt ceiling matters.
 2. **Above pace 1.25 the response nearly collapses** (−0.23). This is an independent
-   argument for SPEC.md's 0.85–1.25 clamp: past 1.25 the extra range buys almost no
+   argument for the brief's 0.85–1.25 clamp: past 1.25 the extra range buys almost no
    duration, so the clamp gives up far less than its width suggests.
 
 Measured on one sentence. The *sign* is a property of the API and generalises; the
@@ -392,7 +392,7 @@ From `https://docs.sarvam.ai/api/getting-started/ratelimits.md`, confirmed 2026-
    re-run costs nothing. Batch would add submit-and-poll state to debug on top of the
    chunking logic that a 30 s cap forces on us anyway.
 2. **The Batch API's main advantage does not pay off yet.** Its selling points are real
-   timestamps and diarization. Diarization is an explicit v1 non-goal (SPEC.md), and the
+   timestamps and diarization. Diarization is an explicit v1 non-goal in the project brief, and the
    timestamps only matter if segment boundaries come from the API — which, for this
    pipeline, they deliberately do not (see below).
 3. **Cost is identical.** STT is ₹30/hour billed per second either way. Chunking bills the

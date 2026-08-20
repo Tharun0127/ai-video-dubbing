@@ -8,7 +8,7 @@ statistics. Fields with no observations serialise as the string "not yet
 measured" rather than 0, so an unmeasured value can never masquerade as a result.
 
 Input:  timing events, ApiCall records, and per-segment fit results.
-Output: output/metrics.json in the schema defined by SPEC.md.
+Output: output/metrics.json in the schema defined by the project brief.
 """
 
 from __future__ import annotations
@@ -125,7 +125,7 @@ class SegmentFit:
     def overrun_pct(self) -> float:
         """Drift in the only direction that breaks sync: how far the dub overruns.
 
-        An underrun is absorbed by padding the gap with silence (SPEC.md), so it costs
+        An underrun is absorbed by padding the gap with silence, as the project brief specifies, so it costs
         nothing in sync terms. An overrun has to spill into the next segment's window or
         be accepted as drift. Reporting both this and the symmetric absolute drift keeps
         the distinction visible instead of averaging the two failure modes together.
@@ -319,7 +319,7 @@ class MetricsCollector:
             "enabled": enabled if enabled is not None else NOT_MEASURED,
             "n_segments": count,
             # A four-segment sample cannot support a meaningful p95; it is reported
-            # because SPEC.md asks for it, and flagged so nobody quotes it as robust.
+            # because the brief asks for it, and flagged so nobody quotes it as robust.
             "small_sample": count < 20,
             "without_fit": _drift_block(before),
             "with_fit": _drift_block(after),
@@ -360,7 +360,7 @@ class MetricsCollector:
             "converged_segments": sum(1 for f in fits if f.converged),
             "converged_pct": round(sum(1 for f in fits if f.converged) / count * 100.0, 2),
         }
-        # SPEC.md's flat field names, kept so the documented metrics.json schema still
+        # the brief's flat field names, kept so the documented metrics.json schema still
         # resolves; they always describe the WITH-fit column.
         stats.update(_drift_block(after))
         return stats
@@ -368,7 +368,7 @@ class MetricsCollector:
     # --- output -----------------------------------------------------------------------
 
     def to_dict(self) -> dict[str, Any]:
-        """Build the metrics.json document in the schema defined by SPEC.md."""
+        """Build the metrics.json document in the schema defined by the project brief."""
         input_duration = self.input_info.get("duration_s")
         total_wall = self.total_wall_clock_s
 

@@ -8,7 +8,7 @@ CLIP    ?= samples/test_clip.mp4
 
 .PHONY: help install test verify verify-free verify-m2 test-api test-api-free \
         demux asr translate tts assemble mux qc dub dub-nofit run dry-run \
-        cold-run variance-probe clean-cache clean
+        cold-run variance-probe figures clean-cache clean
 
 help:  ## Show the available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk -F':.*?## ' '{printf "  %-14s %s\n", $$1, $$2}'
@@ -77,6 +77,9 @@ cold-run:  ## Measure a true cold-cache end-to-end run (SPENDS CREDITS: ~Rs 2.2)
 
 variance-probe:  ## Measure Bulbul's run-to-run duration variance (SPENDS CREDITS: ~Rs 0.75)
 	$(PYTHON) -m scripts.tts_variance_probe --repeats 3
+
+figures:  ## Regenerate the README charts from the measured run reports (free, offline)
+	$(PYTHON) -m scripts.make_figures
 
 clean-cache:  ## Delete every cached API response (the next run will spend credits)
 	$(PYTHON) -c "from src.cache import DiskCache; print(DiskCache('cache').clear(), 'files removed')"

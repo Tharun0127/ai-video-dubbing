@@ -156,7 +156,7 @@ class FitResult:
         )
 
     def to_dict(self) -> dict[str, Any]:
-        """Serialise the full per-segment record, exactly as SPEC.md asks for it."""
+        """Serialise the full per-segment record, exactly as the brief asks for it."""
         target = self.target_duration_s
         return {
             "segment_id": self.segment_id,

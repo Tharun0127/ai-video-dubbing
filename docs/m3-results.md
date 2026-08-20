@@ -110,7 +110,7 @@ mayura mode that holds **one consistent level of address across all four segment
 
 ### 2.3 Recommendation — `mayura:v1` / `classic-colloquial`
 
-Set as the default in `src/config.py`, overriding SPEC.md's Sarvam-Translate.
+Set as the default in `src/config.py`, overriding the brief's Sarvam-Translate.
 
 Ranked reasons:
 
@@ -185,7 +185,7 @@ because they leave English words alone — English carries fewer syllables per i
 
 If Bulbul speaks Hindi at the same syllable rate the source speaker used for English, a
 segment carrying 1.5× the syllables needs to be spoken 1.5× faster to fit the same window.
-**Against SPEC.md's 1.25 perceptual clamp, all four segments would clamp, and the loop
+**Against the brief's 1.25 perceptual clamp, all four segments would clamp, and the loop
 would run out of headroom on every one of them.**
 
 **That worst case probably does not apply to this clip, and the reason matters.** The
@@ -207,7 +207,7 @@ measured** and is M4/M5 work. Concretely, what M4 should expect:
   the residual-drift path to carry real traffic. Build that path properly.
 - On this clip, expect the opposite. **Do not tune the loop on this clip alone** — its
   slack is unrepresentative and would hide the clamping behaviour entirely.
-- The stretch goal in SPEC.md (re-translate more concisely when clamping fails) is aimed at
+- The stretch goal in the project brief (re-translate more concisely when clamping fails) is aimed at
   a ~1.5× syllable ratio, which is what was measured. It is likely to be needed on denser
   source material, and `--translate-mode modern-colloquial` (1.30) is a cheaper first lever.
 

@@ -1,7 +1,7 @@
 """Tests for the mux stage: the video must survive untouched and the dub must be present.
 
 These tests do call real ffmpeg, on a one-second clip generated on the fly. That is
-deliberate and is what SPEC.md asks for: the whole claim of this stage is that `-c:v copy`
+deliberate and is what the brief asks for: the whole claim of this stage is that `-c:v copy`
 passes the picture through unchanged, and only a real remux can demonstrate that. The
 fixture is small enough that the suite stays fast.
 

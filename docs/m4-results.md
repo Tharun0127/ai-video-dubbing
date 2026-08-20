@@ -28,7 +28,7 @@ to **−0.23 between pace 1.25 and 1.50**. So `pace *= ratio` systematically *ov
 still converges — overshoot with |elasticity| < 2 is a contraction — but it justifies the
 3-attempt ceiling rather than expecting one-shot convergence.
 
-It also gives SPEC.md's 0.85–1.25 clamp an independent justification beyond perception:
+It also gives the brief's 0.85–1.25 clamp an independent justification beyond perception:
 **above 1.25 the extra API range buys almost no duration change anyway**, so clamping
 gives up far less than its width suggests.
 
@@ -80,7 +80,7 @@ Paired over the same 4 segments; "no-fit" is each segment's own pace=1.0 attempt
 | **without fit** | 62.62% | 61.85% | 82.91% | 85.60% | 4/4 |
 | **with fit** | 60.81% | 60.87% | 78.52% | 80.44% | 4/4 |
 
-**n = 4 — small sample.** p50 and p95 are reported because SPEC.md asks for them, but at
+**n = 4 — small sample.** p50 and p95 are reported because the brief asks for them, but at
 n=4 a p95 is an interpolation between the top two values, not evidence. They are flagged
 `"small_sample": true` in `metrics.json` itself.
 
@@ -106,7 +106,7 @@ the windows mostly silence: measured source syllable rate was 0.74–1.32 syl/s 
 for ordinary speech. Segment 3 is a 10.8 s window holding roughly 2 s of speech.
 
 **Slowing speech to 0.85 to fill a 10.8 s window with a 2 s line is not a dub anyone
-wants.** The correct handling of an underrun is the one SPEC.md already specifies —
+wants.** The correct handling of an underrun is the one the brief already specifies —
 *"if actual < target_duration: pad with trailing silence"* — which costs nothing in sync
 terms.
 
@@ -169,7 +169,7 @@ was not exercised by this clip at all and remains unverified on real material.
 
 ## 6. Per-segment record
 
-Every field SPEC.md and the brief ask for, in `output/tts_report.json`:
+Every field the project brief asks for, in `output/tts_report.json`:
 
 ```json
 {

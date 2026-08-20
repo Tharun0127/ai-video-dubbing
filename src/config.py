@@ -35,7 +35,7 @@ AUTH_HEADER = "api-subscription-key"
 #: Model identifiers, pinned so cache keys stay stable across runs.
 #:
 #: The translation default is mayura:v1 rather than the sarvam-translate:v1 named in
-#: SPEC.md. That is a deliberate, measured deviation: sarvam-translate:v1 is formal-only,
+#: the project brief. That is a deliberate, measured deviation: sarvam-translate:v1 is formal-only,
 #: and on this conversational source it mistranslated "top card" as "सबसे अच्छा कार्ड"
 #: (best card) and "No way" as "कोई बात नहीं" (never mind). mayura:v1 in
 #: classic-colloquial got both right. Full side-by-side in docs/m3-results.md.
@@ -80,7 +80,7 @@ TRANSLATE_NUMERALS_FORMATS: frozenset[str] = frozenset({"international", "native
 TRANSLATE_SPEAKER_GENDERS: frozenset[str] = frozenset({"Male", "Female"})
 
 #: Bulbul's documented pace range. The pipeline deliberately clamps tighter than this
-#: (see SPEC.md) because speech stops sounding human beyond roughly +/-25%.
+#: (see the project brief) because speech stops sounding human beyond roughly +/-25%.
 #:
 #: Direction confirmed by real calls, not by reading the docs alone (scripts/m4_probe.py,
 #: recorded in docs/api-notes.md): a HIGHER pace produces SHORTER audio, i.e. faster
@@ -105,7 +105,7 @@ TTS_SPEAKERS_V3: frozenset[str] = frozenset(
     }
 )
 
-#: Fixed speaker for v1 (SPEC.md defers voice selection and cloning to the stretch list).
+#: Fixed speaker for v1 (the brief defers voice selection and cloning to the stretch list).
 TTS_SPEAKER = "shubh"
 
 #: Output format. 24 kHz is the documented v3 default; WAV keeps decoding in the stdlib.
@@ -229,7 +229,7 @@ TTS_TRIM_KEEP_MARGIN_MS = 20.0
 # M5 assemble + mux defaults (see src/stages/assemble.py and src/stages/mux.py)
 # --------------------------------------------------------------------------------------
 
-#: Linear fade applied to each end of every placed clip. SPEC.md asks for 10-20 ms; 15 ms
+#: Linear fade applied to each end of every placed clip. the brief asks for 10-20 ms; 15 ms
 #: is the midpoint. Its only job is to remove the step discontinuity -- and therefore the
 #: click -- where a clip meets the silent track.
 ASSEMBLE_FADE_MS = 15.0
@@ -252,7 +252,7 @@ MUX_DURATION_TOLERANCE_S = 0.25
 # M6 QC defaults (see src/qc.py)
 # --------------------------------------------------------------------------------------
 
-#: SPEC.md's timing threshold: segments drifting more than this are counted and flagged.
+#: the brief's timing threshold: segments drifting more than this are counted and flagged.
 QC_DRIFT_THRESHOLD_PCT = 5.0
 
 #: How many worst segments the QC report ranks by default.
@@ -462,7 +462,7 @@ class Config:
             raise ConfigError(
                 f"the pace clamp [{self.pace_min}, {self.pace_max}] must sit inside the "
                 f"API's documented range [{TTS_API_PACE_MIN}, {TTS_API_PACE_MAX}] and be "
-                f"ordered. The tighter default is deliberate: see SPEC.md."
+                f"ordered. The tighter default is deliberate: see the project brief."
             )
         if self.trim_threshold_db >= 0:
             raise ConfigError(

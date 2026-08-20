@@ -1,7 +1,7 @@
 """
 Pipeline stages, each with a clean input/output contract and independently runnable.
 
-Delivery order (see SPEC.md):
+Delivery order (see the project brief):
     demux.py    M2  ffmpeg -> 16 kHz mono WAV
     asr.py      M2  Saaras v3 -> segments.json with stitched timestamps
     translate.py M3 Sarvam-Translate -> per-segment target text
